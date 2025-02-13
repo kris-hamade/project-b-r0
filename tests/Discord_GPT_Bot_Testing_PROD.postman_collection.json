@@ -1,0 +1,373 @@
+{
+	"info": {
+		"_postman_id": "441e1241-6e53-46f7-b6fd-47bd8385dfab",
+		"name": "Discord_GPT_Bot_Testing",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7032109",
+		"_collection_link": "https://interstellar-resonance-446087.postman.co/workspace/My-Workspace~d7d36c91-8122-43e2-804c-e58dfd790a46/collection/7032109-441e1241-6e53-46f7-b6fd-47bd8385dfab?action=share&creator=7032109&source=collection_link"
+	},
+	"item": [
+		{
+			"name": "Check Status",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Check Status\", function () {",
+							"    var responseData = pm.response.text();",
+							"    var testStatus = responseData === \"Bot is up and running\"",
+							"        ? \"Bot Status Check Was Successful - Bot Status is Up\"",
+							"        : \"Bot Status Check was Unsuccessful - Bot Status is Down\";",
+							"    pm.expect(responseData).to.eql(\"Bot is up and running\");",
+							"    console.log(testStatus);",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0.hamy.app/api/status",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"status"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Chat History",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Get Chat History\", function () {",
+							"    try {",
+							"        var jsonData = pm.response.json();",
+							"        var testStatus = jsonData.success === true",
+							"            ? \"Chat History Check: Success\"",
+							"            : \"Chat History Check: Failure\";",
+							"        pm.expect(jsonData.success).to.be.true;",
+							"        console.log(testStatus);",
+							"    } catch (e) {",
+							"        pm.test('Response is not JSON', function() {",
+							"            pm.expect.fail('Response is not JSON');",
+							"        });",
+							"    }",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0.hamy.app/api/chatHistory",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"chatHistory"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Current Character Journal Data",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Get Current Character Journal Data\", function () {",
+							"    try {",
+							"        var jsonData = pm.response.json();",
+							"        var testStatus = jsonData.success === true",
+							"            ? \"Journal Data Check: Success\"",
+							"            : \"Journal Data Check: Failure\";",
+							"        pm.expect(jsonData.success).to.be.true;",
+							"        console.log(testStatus);",
+							"    } catch (e) {",
+							"        pm.test('Response is not JSON', function() {",
+							"            pm.expect.fail('Response is not JSON');",
+							"        });",
+							"    }",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0.hamy.app/api/currentJournal",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"currentJournal"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Current Journal Handouts Data",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Get Current Journal Handouts Data\", function () {",
+							"    try {",
+							"        var jsonData = pm.response.json();",
+							"        var testStatus = jsonData.success === true",
+							"            ? \"Handouts Data Check: Success\"",
+							"            : \"Handouts Data Check: Failure\";",
+							"        pm.expect(jsonData.success).to.be.true;",
+							"        console.log(testStatus);",
+							"    } catch (e) {",
+							"        pm.test('Response is not JSON', function() {",
+							"            pm.expect.fail('Response is not JSON');",
+							"        });",
+							"    }",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0.hamy.app/api/currentHandouts",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"currentHandouts"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Configuration",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Check Configuration\", function () {",
+							"    var responseData = pm.response.text();",
+							"    var lines = responseData.split('\\n');",
+							"    var data = {};",
+							"    lines.forEach(line => {",
+							"        var parts = line.split(':');",
+							"        if (parts.length >= 2) {",
+							"            var key = parts.shift().trim();",
+							"            var value = parts.join(':').trim();",
+							"            data[key] = value;",
+							"        }",
+							"    });",
+							"    pm.test(\"Check version number format - \" + data['Version'], function () {",
+							"        pm.expect(data['Version']).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/);",
+							"    });",
+							"    pm.test(\"Check character limit - \" + data['Character Limit'], function () {",
+							"        pm.expect(data['Character Limit']).to.not.be.empty;",
+							"        pm.expect(data['Character Limit']).to.not.eql('0');",
+							"    });",
+							"    pm.test(\"Check start time - \" + data['Start Time'], function () {",
+							"        pm.expect(data['Start Time']).to.exist;",
+							"        if (data['Start Time']) {",
+							"            pm.expect(data['Start Time']).to.not.be.empty;",
+							"        }",
+							"    });",
+							"    pm.test(\"Check uptime - \" + data['Uptime'], function () {",
+							"        pm.expect(data['Uptime']).to.not.be.empty;",
+							"    });",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "https://b-r0.hamy.app/api/config",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"config"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Uptime",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Check Uptime\", function () {",
+							"    var responseData = pm.response.text();",
+							"    var testStatus = responseData !== null",
+							"        ? `Uptime Check Was Successful - Uptime is ${responseData}`",
+							"        : \"Uptime Check Was Unsuccessful\";",
+							"    pm.expect(responseData).to.not.be.empty;",
+							"    console.log(testStatus);",
+							"});"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0.hamy.app/api/uptime",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"uptime"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Roll20 Handouts Data Update Endpoint",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": "./test.json"
+						}
+					]
+				},
+				"url": {
+					"raw": "b-r0.hamy.app/api/uploadRoll20Data/Handouts",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"uploadRoll20Data",
+						"Handouts"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Roll20 Journal Data Update Endpoint",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": "./test.json"
+						}
+					]
+				},
+				"url": {
+					"raw": "b-r0.hamy.app/api/uploadRoll20Data/Journal",
+					"host": [
+						"b-r0.hamy.app"
+					],
+					"path": [
+						"api",
+						"uploadRoll20Data",
+						"Journal"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"auth": {
+		"type": "apikey",
+		"apikey": [
+			{
+				"key": "key",
+				"value": "Authorization",
+				"type": "string"
+			},
+			{
+				"key": "value",
+				"value": "fd211164e731c6577a848d0331554f487787fefe8286c9f6d66717ed08a0b864",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "url",
+			"value": "",
+			"type": "string",
+			"disabled": true
+		},
+		{
+			"key": "port",
+			"value": "PORTNUMBER",
+			"type": "string",
+			"disabled": true
+		}
+	]
+}

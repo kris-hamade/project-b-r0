@@ -1,0 +1,392 @@
+{
+	"info": {
+		"_postman_id": "441e1241-6e53-46f7-b6fd-47bd8385dfab",
+		"name": "Discord_GPT_Bot_Testing",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7032109",
+		"_collection_link": "https://interstellar-resonance-446087.postman.co/workspace/My-Workspace~d7d36c91-8122-43e2-804c-e58dfd790a46/collection/7032109-441e1241-6e53-46f7-b6fd-47bd8385dfab?action=share&creator=7032109&source=collection_link"
+	},
+	"item": [
+		{
+			"name": "Check Status",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var responseData = pm.response.text();\r",
+							"var testStatus\r",
+							"\r",
+							"var testStatus = (responseData === \"Bot is up and running\") \r",
+							"                 ? \"Bot Status Check Was Successful - Bot Status is Up\" \r",
+							"                 : \"Bot Status Check was Unsuccessful - Bot Status is Down\";\r",
+							"\r",
+							"pm.test(testStatus, function () {\r",
+							"        pm.expect(responseData).to.eql(\"Bot is up and running\");\r",
+							"    });"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/status",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"status"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Chat History",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();\r",
+							"\r",
+							"var testStatus = (jsonData.success === true)\r",
+							"                 ? \"Chat History Check: Success\"\r",
+							"                 : \"Chat History Check: Failure\";\r",
+							"\r",
+							"pm.test(testStatus, function () {\r",
+							"    pm.expect(jsonData.success).to.be.true;\r",
+							"});\r",
+							""
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/chatHistory",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"chatHistory"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Current Character Journal Data",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();\r",
+							"\r",
+							"var testStatus = (jsonData.success === true)\r",
+							"                 ? \"Journal Data Check: Success\"\r",
+							"                 : \"Journal Data Check: Failure\";\r",
+							"\r",
+							"pm.test(testStatus, function () {\r",
+							"    pm.expect(jsonData.success).to.be.true;\r",
+							"});\r",
+							""
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/currentJournal",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"currentJournal"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Current Journal Handouts Data",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();\r",
+							"\r",
+							"var testStatus = (jsonData.success === true)\r",
+							"                 ? \"Handouts Data Check: Success\"\r",
+							"                 : \"Handouts Data Check: Failure\";\r",
+							"\r",
+							"pm.test(testStatus, function () {\r",
+							"    pm.expect(jsonData.success).to.be.true;\r",
+							"});\r",
+							""
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/currentHandouts",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"currentHandouts"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Configuration",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"// Get the response data\r",
+							"var responseData = pm.response.text();\r",
+							"\r",
+							"// Split the response into lines\r",
+							"var lines = responseData.split('\\n');\r",
+							"\r",
+							"// Create an object to store the key-value pairs\r",
+							"var data = {};\r",
+							"\r",
+							"// Parse each line\r",
+							"lines.forEach(line => {\r",
+							"    var parts = line.split(':');\r",
+							"    if (parts.length >= 2) {\r",
+							"        var key = parts.shift().trim();\r",
+							"        var value = parts.join(':').trim();\r",
+							"        data[key] = value;\r",
+							"    }\r",
+							"});\r",
+							"\r",
+							"// Check each field\r",
+							"pm.test(\"Check version number format - \" + data['Version'], function () {\r",
+							"    var version = data['Version'];\r",
+							"    pm.expect(version).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/);\r",
+							"});\r",
+							"/*\r",
+							"pm.test(\"Check GPT model - \" + data['GPT Model'], function () {\r",
+							"    var model = data['GPT Model'];\r",
+							"    pm.expect(model).to.not.be.empty;\r",
+							"});\r",
+							"\r",
+							"pm.test(\"Check GPT temperature - \" + data['GPT Temperature'], function () {\r",
+							"    var temperature = data['GPT Temperature'];\r",
+							"    pm.expect(temperature).to.not.be.empty;\r",
+							"    pm.expect(temperature).to.not.eql('0');\r",
+							"});\r",
+							"*/\r",
+							"pm.test(\"Check character limit - \" + data['Character Limit'], function () {\r",
+							"    var limit = data['Character Limit'];\r",
+							"    pm.expect(limit).to.not.be.empty;\r",
+							"    pm.expect(limit).to.not.eql('0');\r",
+							"});\r",
+							"\r",
+							"pm.test(\"Check start time - \" + data['Start Time'], function () {\r",
+							"    var time = data['Start Time'];\r",
+							"    pm.expect(time).to.exist;\r",
+							"    if (time) {\r",
+							"        pm.expect(time).to.not.be.empty;\r",
+							"    }\r",
+							"});\r",
+							"\r",
+							"pm.test(\"Check uptime - \" + data['Uptime'], function () {\r",
+							"    var uptime = data['Uptime'];\r",
+							"    pm.expect(uptime).to.not.be.empty;\r",
+							"});\r",
+							"\r",
+							""
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "https://b-r0dev.hamy.app/api/config",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"config"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Uptime",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var responseData = pm.response.text();\r",
+							"var testStatus\r",
+							"\r",
+							"var testStatus = (responseData !== null) \r",
+							"                 ? `Uptime Check Was Successful - Uptime is ${responseData}` \r",
+							"                 : \"Uptime Check Was Unsuccessful\";\r",
+							"\r",
+							"pm.test(testStatus, function () {\r",
+							"        pm.expect(responseData).to.not.be.empty;\r",
+							"    });"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/uptime",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"uptime"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Roll20 Handouts Data Update Endpoint",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": "./test.json"
+						}
+					]
+				},
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/uploadRoll20Data/Handouts",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"uploadRoll20Data",
+						"Handouts"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Check Roll20 Journal Data Update Endpoint",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": "./test.json"
+						}
+					]
+				},
+				"url": {
+					"raw": "b-r0dev.hamy.app/api/uploadRoll20Data/Journal",
+					"host": [
+						"b-r0dev.hamy.app"
+					],
+					"path": [
+						"api",
+						"uploadRoll20Data",
+						"Journal"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"auth": {
+		"type": "apikey",
+		"apikey": [
+			{
+				"key": "key",
+				"value": "Authorization",
+				"type": "string"
+			},
+			{
+				"key": "value",
+				"value": "fd211164e731c6577a848d0331554f487787fefe8286c9f6d66717ed08a0b864",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "url",
+			"value": "",
+			"type": "string",
+			"disabled": true
+		},
+		{
+			"key": "port",
+			"value": "PORTNUMBER",
+			"type": "string",
+			"disabled": true
+		}
+	]
+}

@@ -1,0 +1,46 @@
+{
+  "name": "project-b-r0",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/krishamade/project-b-r0/issues"
+  },
+  "homepage": "https://github.com/krishamade/project-b-r0#readme",
+  "dependencies": {
+    "@dice-roller/rpg-dice-roller": "^5.5.0",
+    "@sentry/node": "^7.47.0",
+    "@sentry/tracing": "^7.88.0",
+    "api": "^6.1.2",
+    "archiver": "^5.3.1",
+    "axios": "^1.3.5",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "cronstrue": "^2.28.0",
+    "discord-api-types": "^0.37.43",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "http": "^0.0.1-security",
+    "midjourney": "^4.3.11",
+    "moment": "^2.29.4",
+    "moment-timezone": "^0.5.43",
+    "mongoose": "^7.4.0",
+    "multer": "^1.4.5-lts.1",
+    "natural": "^6.3.0",
+    "node-cron": "^3.0.2",
+    "node-fetch": "^3.3.2",
+    "node-schedule": "^2.1.1",
+    "nodemon": "^3.0.1",
+    "openai": "^4.23.0",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.0",
+    "ws": "^8.15.1"
+  }
+}
