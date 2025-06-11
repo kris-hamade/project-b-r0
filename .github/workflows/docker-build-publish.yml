@@ -23,6 +23,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Create .env file from secret
+      - name: Create .env file
+        run: echo "${{ secrets.ENV_FILE }}" > .env
+
       # Log into GitHub Container Registry (GHCR)
       - name: Log into registry ${{ env.REGISTRY }}
         uses: docker/login-action@v3
