@@ -1,37 +1,37 @@
-const axios = require('axios');
-const checkAllImagesAvailability = require('../utils/helperFuncs');
+const openai = require("../openai/openAi");
 
 async function generateImage(description) {
-    console.log('Description:', description);
+    console.log("Description:", description);
 
     try {
-        const response = await axios.post('https://api.openai.com/v1/images/generations', {
-            "model": "dall-e-3",
-            "prompt": description,
-            "n": 1,
-            "size": "1024x1024"
-        }, {
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-            }
+        const response = await openai.images.generate({
+            model: "gpt-image-1",
+            prompt: description,
+            n: 1,
+            size: "1024x1024"
         });
-
-        console.log(response.data);
-
         // Extract the URL from the response data if it exists
-        let imageUrls = response.data.data ? response.data.data.map(item => item.url) : [];
-        console.log('Generated Image URLs:', imageUrls);
-
-        // Return the image URLs along with an indication that the operation was successful (eta: 0)
-        return { imageUrls, eta: 0 };
+        const imagesArray = Array.isArray(response.data)
+            ? response.data
+            : (response.data.data || []);
+        const imageBase64 = imagesArray.map(item => item.b64_json).filter(Boolean);
+        const revisedPrompt = imagesArray[0]?.revised_prompt || description;
+        console.log("Revised Prompt:", revisedPrompt);
+        // Return the base64 image strings along with an indication that the operation was successful
+        return {
+            imageBase64,
+            eta: 0
+        };
     } catch (error) {
         console.error("Error generating image:", error);
-        // Return an empty array for imageUrls and an error indicator for eta
-        return { imageUrls: [], eta: -1 };
+        // Return an empty array for imageBase64 and an error indicator for eta
+        return {
+            imageBase64: [],
+            eta: -1
+        };
     }
 }
 
 module.exports = {
-    generateImage
-}
+    generateImage,
+};
