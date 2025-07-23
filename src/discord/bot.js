@@ -68,14 +68,27 @@ async function handleMessage(message) {
   // Ignore messages from other bots
   if (message.author.bot) return;
 
-  // Check to make sure we aren't overreacting
-  const regex = /\b(?:don'?t|do\s+not)\s+have\s+a\s+cow[\s'!,?]*\b/i;
-  if (regex.test(message.content)) {
+  // Check for "don't have a cow"
+  const regexCow = /\b(?:don'?t|do\s+not)\s+have\s+a\s+cow[\s'!,?]*\b/i;
+  if (regexCow.test(message.content)) {
     await message.reply(
       "https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExdWVva2V6cGpxMzM4cDN6MDNwNG40M3J3bGlpajV0ZWlibWZ6Mmw0ayZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/h55EUEsTG9224/giphy.gif"
     );
     return;
   }
+
+  // Check for incomplete Thunderfury name
+  const containsThunderfury = /thunderfury/i.test(message.content);
+  const fullThunderfuryName = /thunderfury[\s,]*blessed[\s,]*blade[\s,]*of[\s,]*the[\s,]*windseeker/i.test(message.content);
+
+  if (containsThunderfury && !fullThunderfuryName) {
+    await message.reply({
+      content: `<@${message.author.id}> You mean,\n# Thunderfury, Blessed Blade of the Windseeker`,
+      allowedMentions: { users: [message.author.id] },
+    });
+    return;
+  }
+
 
   // Skip if the bot is not mentioned or if other mentions are present
   if (

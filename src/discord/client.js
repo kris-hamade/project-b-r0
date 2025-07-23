@@ -13,20 +13,8 @@ const client = new Discord.Client({
     ],
     partials: [
         Discord.Partials.Channel,
-        Discord.Partials.Message,
-        Discord.Partials.User,
-        Discord.Partials.GuildMember
-    ],
-    fetchAllMembers: true
-});
-
-// Add error handling for member fetching
-client.on('error', error => {
-    if (error.code === 'GuildMembersTimeout') {
-        console.warn('Guild members fetch timed out. This is normal for large servers.');
-    } else {
-        console.error('Discord client error:', error);
-    }
+        Discord.Partials.Message
+    ]
 });
 
 module.exports = client;
