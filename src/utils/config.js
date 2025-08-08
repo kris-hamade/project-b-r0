@@ -31,7 +31,7 @@ function getModelTemperatures() {
 function getTokenLimits() {
     // Convert each TOKEN limit to an integer, returns NaN if not convertible, hence OR 0 or any default if required
     let tokenLimits = {
-        chat_input_limit: parseInt(process.env.TOKEN_INPUT_LIMIT, 10),
+        chat_input_limit: parseInt(process.env.TOKEN_INPUT_LIMIT, 10) || 1000,
         chat_output_limit: parseInt(process.env.TOKEN_OUTPUT_LIMIT, 10) || 1000,
         image_analysis_limit: parseInt(process.env.TOKEN_IMAGE_ANALYSIS_LIMIT, 10) || 1000,
     };
