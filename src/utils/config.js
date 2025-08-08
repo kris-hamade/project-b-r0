@@ -16,7 +16,7 @@ function getCharacterLimit() {
 
 function getGlobalGptModel() {
     // Convert GLOBAL_GPT_MODEL to a string or default to an empty string if undefined
-    let globalGptModel = process.env.GLOBAL_GPT_MODEL || "gpt-4o-mini";
+    let globalGptModel = process.env.GLOBAL_GPT_MODEL || "gpt-5-chat-latest";
     return globalGptModel;
 }
 
