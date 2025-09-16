@@ -58,7 +58,7 @@ async function generateResponse(
           content: `${nickname} says: ${prompt}`,
         },
       ],
-      max_tokens: getTokenLimits().chat_input_limit,
+      max_response_tokens: getTokenLimits().chat_input_limit,
       temperature: temperature
     });
 
@@ -98,7 +98,7 @@ async function generateWebhookReport(message) {
       model: "gpt-5-chat-latest",
       messages: messages,
       temperature: getModelTemperatures().chat_output_temperature,
-      max_tokens: getTokenLimits().chat_output_limit
+      max_response_tokens: getTokenLimits().chat_output_limit
     });
 
     const message = response.choices[0].message.content;
@@ -139,7 +139,7 @@ async function generateImageResponse(prompt, persona, model, temperature, imageD
       model: getGlobalGptModel(),
       messages: messages,
       temperature: temperature,
-      max_tokens: getTokenLimits().image_analysis_limit
+      max_response_tokens: getTokenLimits().image_analysis_limit
     });
 
     const message = response.choices[0].message.content;
