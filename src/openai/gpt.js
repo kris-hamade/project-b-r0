@@ -256,29 +256,6 @@ async function personaBuilder(persona) {
   return personaMessage;
 }
 
-function formatImageDescription(imageDescription) {
-  let descriptions = [];
-
-  // For the caption
-  if (imageDescription.caption) {
-    descriptions.push(`Caption: ${imageDescription.caption}`);
-  }
-
-  // For objects, denseCaptions, tags, etc. that are arrays
-  for (let key of Object.keys(imageDescription)) {
-    if (Array.isArray(imageDescription[key]) && imageDescription[key].length > 0) {
-      descriptions.push(`${capitalizeFirstLetter(key)}: ${imageDescription[key].join(', ')}`);
-    }
-  }
-
-  // For readContent or other string properties
-  if (imageDescription.readContent) {
-    descriptions.push(`Read Content: ${imageDescription.readContent}`);
-  }
-
-  return descriptions.join('. ');
-}
-
 module.exports = {
   generateResponse,
   generateEventData,
