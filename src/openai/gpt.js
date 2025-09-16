@@ -77,7 +77,7 @@ async function generateResponse(
   } catch (error) {
     console.error("Error generating response:", error); // Log the error for debugging
 
-    const errorMessage = `BZZZZT! WEEEEEOOOO WEEEEOOWWW BRRRRRRT!! *B-r0 flails his arms and spins in place* ERROR! MEMORY BANKS OVERLOADED! TRY BEING MORE SPECIFIC ABOUT OUR ADVENTURES!`;    return errorMessage; // Return an empty string if an error occurs
+    const errorMessage = `BZZZZT! WEEEEEOOOO WEEEEOOWWW BRRRRRRT!! *B-r0 flails his arms and spins in place* ERROR! MEMORY BANKS OVERLOADED! TRY BEING MORE SPECIFIC ABOUT OUR ADVENTURES!`; return errorMessage; // Return an empty string if an error occurs
   }
 }
 
