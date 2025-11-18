@@ -1,6 +1,7 @@
 const moment = require("moment");
 const ChatHistory = require('../models/chatHistory');
 const Roll20Data = require("../models/roll20Data");
+const fs = require('fs').promises;
 
 const {
   getConfigInformation,
@@ -9,32 +10,48 @@ const {
 
 const { processWebhook } = require("../utils/webhook");
 
-// Get Bot Status /api/status
-exports.status = async (req, res) => {
+/**
+ * Get Bot Status
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.status = async (c) => {
   console.log(
     `[${moment().format("YYYY-MM-DD HH:mm:ss")}] Bot status requested.`
   );
-  res.send("Bot is up and running");
+  return c.text("Bot is up and running");
 };
 
-// Get Bot Config /api/config
-exports.config = async (req, res) => {
+/**
+ * Get Bot Config
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.config = async (c) => {
   console.log(
     `[${moment().format("YYYY-MM-DD HH:mm:ss")}] Bot config requested.`
   );
-  res.send(getConfigInformation());
+  return c.json(getConfigInformation());
 };
 
-// Get Bot Uptime /api/uptime
-exports.uptime = async (req, res) => {
+/**
+ * Get Bot Uptime
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.uptime = async (c) => {
   console.log(
     `[${moment().format("YYYY-MM-DD HH:mm:ss")}] Bot uptime requested.`
   );
-  res.send(getUptime());
+  return c.text(getUptime());
 };
 
-// Clear Chat History /api/clearChatHistory
-exports.clearChatHistory = async (req, res) => {
+/**
+ * Clear Chat History
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.clearChatHistory = async (c) => {
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Clear chat history requested.`);
 
   try {
@@ -42,21 +59,25 @@ exports.clearChatHistory = async (req, res) => {
     await ChatHistory.deleteMany({});
 
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Chat history cleared successfully.`);
-    res.json({
+    return c.json({
       success: true,
       message: "Chat history cleared successfully.",
     });
   } catch (err) {
     console.error(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] An error occurred while clearing the chat history:`, err);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: "An error occurred while clearing the chat history.",
-    });
+    }, 500);
   }
 };
 
-// Get Chat History /api/getChatHistory
-exports.getChatHistory = async (req, res) => {
+/**
+ * Get Chat History
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.getChatHistory = async (c) => {
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Chat history requested.`);
 
   try {
@@ -64,59 +85,82 @@ exports.getChatHistory = async (req, res) => {
     const chatHistory = await ChatHistory.find({});
 
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Chat history retrieved.`);
-    res.json({
+    return c.json({
       success: true,
       chatHistory,
     });
   } catch (err) {
     console.error(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] An error occurred while reading the chat history:`, err);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: "An error occurred while reading the chat history.",
-    });
+    }, 500);
   }
 };
 
-// Replace Roll20 JSON Data /api/uploadRoll20Data
-exports.uploadRoll20Data = async (req, res) => {
+/**
+ * Upload Roll20 Data
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.uploadRoll20Data = async (c) => {
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Roll20 data upload requested.`);
-  const type = req.params.type;
+  const type = c.req.param('type');
 
-  // Check if a file was uploaded
-  if (!req.file) {
-    console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] No file uploaded.`);
-    return res.status(400).json({
-      success: false,
-      message: "A file is required.",
-    });
-  }
+  try {
+    // Get file from form data (Hono handles multipart/form-data)
+    const body = await c.req.parseBody();
+    const file = body.file;
 
-  const uploadedFilePath = req.file.path;
-  const uploadedFileName = req.file.originalname;
+    // Check if a file was uploaded
+    if (!file) {
+      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] No file uploaded.`);
+      return c.json({
+        success: false,
+        message: "A file is required.",
+      }, 400);
+    }
+
+    // Handle file - Hono returns File object for multipart uploads
+    let uploadedDataRaw;
+    let uploadedFileName;
+
+    if (file instanceof File) {
+      uploadedFileName = file.name;
+      uploadedDataRaw = await file.text();
+    } else if (typeof file === 'string') {
+      // If it's a file path (from multer or similar)
+      uploadedFileName = file;
+      uploadedDataRaw = await fs.readFile(file, 'utf-8');
+    } else {
+      return c.json({
+        success: false,
+        message: "Invalid file format.",
+      }, 400);
+    }
 
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded file:`, uploadedFileName);
 
   // Check if the file is a JSON file
   if (!uploadedFileName.endsWith(".json")) {
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Invalid file type.`);
-    return res.status(400).json({
+    return c.json({
       success: false,
       message: "Only JSON files are allowed.",
-    });
+    }, 400);
   }
 
   // If the uploaded file is named 'test.json', don't make any modifications
   if (uploadedFileName === "test.json") {
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Test upload succeeded.`);
-    return res.json({
+    return c.json({
       success: true,
       message: "Test Upload Succeeded.",
     });
   }
 
   try {
-    // Read uploaded file
-    const uploadedDataRaw = await fs.readFile(uploadedFilePath, 'utf-8');
+    // Parse uploaded file
     const uploadedData = JSON.parse(uploadedDataRaw);
 
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded data retrieved.`);
@@ -149,21 +193,27 @@ exports.uploadRoll20Data = async (req, res) => {
 
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] ${updateCount} entries updated, ${newEntryCount} new entries added.`);
 
-    res.json({
+    return c.json({
       success: true,
       message: `${updateCount} entries updated, ${newEntryCount} new entries added.`,
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({
+    return c.json({
       success: false,
       message: "An error occurred.",
-    });
+    }, 500);
   }
 };
 
-exports.webhookHandler = (req, res) => {
+/**
+ * Webhook Handler
+ * @param {Context} c - Hono context
+ * @returns {Response}
+ */
+exports.webhookHandler = async (c) => {
   // Process the incoming webhook data here
-  processWebhook(req.body)
-  res.status(200).send('Webhook data received!');
+  const body = await c.req.json();
+  processWebhook(body);
+  return c.text('Webhook data received!', 200);
 };

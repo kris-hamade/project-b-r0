@@ -25,12 +25,12 @@ const {
 const ScheduledEvent = require("../models/scheduledEvent");
 const moment = require("moment-timezone");
 const cronstrue = require("cronstrue");
-const axios = require("axios");
 const Personas = require("../models/personas");
 const { getImageDescription } = require("../imaging/vision");
 const WebhookSubs = require("../models/webhookSub");
 const { loadWebhookSubs } = require("../utils/webhook");
 const { DiceRoll } = require("@dice-roller/rpg-dice-roller");
+const { initEntropyEngine, createDiceRng } = require("../utils/entropyEngine");
 
 // Include the required packages for slash commands
 const { REST } = require("@discordjs/rest");
@@ -505,6 +505,14 @@ const commands = [
 
 function start() {
   client.on("ready", async () => {
+    // Initialize entropy engine for dice rolling
+    try {
+      initEntropyEngine('https://pg.hamy.app', 2048);
+      console.log('[EntropyEngine] Initialized with API entropy source');
+    } catch (error) {
+      console.error('[EntropyEngine] Failed to initialize:', error);
+    }
+
     // Fetch the personas, sort them alphabetically by name, and then populate the personaChoices array:
     const availablePersonas = await Personas.find()
       .sort({ name: 1 })
@@ -908,12 +916,25 @@ function start() {
 
         case "roll": {
           const dice = interaction.options.getString("dice");
-          const roll = new DiceRoll(dice);
-          const expandedRoll = roll.output.split(" =")[0];
+          try {
+            // Use custom entropy engine for dice rolling
+            // The dice-roller library accepts an options object with an rng property
+            const customRng = createDiceRng();
+            const roll = new DiceRoll(dice, { rng: customRng });
+            const expandedRoll = roll.output.split(" =")[0];
 
-          await interaction.reply(
-            `**You Rolled ${roll.total}**: (${expandedRoll})`
-          );
+            await interaction.reply(
+              `**You Rolled ${roll.total}**: (${expandedRoll})`
+            );
+          } catch (error) {
+            console.error('[DiceRoll] Error with custom RNG, falling back to default:', error);
+            // Fallback to default RNG if custom RNG fails
+            const roll = new DiceRoll(dice);
+            const expandedRoll = roll.output.split(" =")[0];
+            await interaction.reply(
+              `**You Rolled ${roll.total}**: (${expandedRoll})`
+            );
+          }
           break;
         }
 

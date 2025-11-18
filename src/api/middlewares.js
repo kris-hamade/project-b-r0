@@ -2,55 +2,80 @@ const Roll20Data = require("../models/roll20Data");
 
 const API_KEY = process.env.API_KEY;
 
-exports.errorHandler = function (err, req, res, next) {
+/**
+ * Error handler middleware for Hono
+ * @param {Error} err 
+ * @param {Context} c 
+ * @returns {Response}
+ */
+exports.errorHandler = function (err, c) {
     console.error(err.stack);
-    res.status(500).send('Something went wrong');
+    return c.json({ error: 'Something went wrong' }, 500);
 };
 
-exports.authMiddleware = (req, res, next) => {
-    const authHeader = req.headers.authorization;
+/**
+ * Authentication middleware for Hono
+ * @param {Context} c 
+ * @param {Function} next 
+ * @returns {Promise<Response|void>}
+ */
+exports.authMiddleware = async (c, next) => {
+    const authHeader = c.req.header('authorization');
 
     if (!authHeader || authHeader !== API_KEY) {
-        return res.status(401).json({
+        return c.json({
             message: 'Unauthorized'
-        });
+        }, 401);
     }
 
-    next();
+    await next();
 };
 
-// Get current Journal /api/currentJournal
-exports.getCurrentJournal = async (req, res) => {
-    getCurrentRoll20Data('Journal', req, res);
+/**
+ * Get current Journal handler
+ * @param {Context} c 
+ * @returns {Promise<Response>}
+ */
+exports.getCurrentJournal = async (c) => {
+    return getCurrentRoll20Data('Journal', c);
 };
 
-// Get current Handouts /api/currentHandouts
-exports.getCurrentHandouts = async (req, res) => {
-    getCurrentRoll20Data('Handouts', req, res);
+/**
+ * Get current Handouts handler
+ * @param {Context} c 
+ * @returns {Promise<Response>}
+ */
+exports.getCurrentHandouts = async (c) => {
+    return getCurrentRoll20Data('Handouts', c);
 };
 
-// Helper function to get current Roll20 data
-async function getCurrentRoll20Data(type, req, res) {
+/**
+ * Helper function to get current Roll20 data
+ * @param {string} type 
+ * @param {Context} c 
+ * @returns {Promise<Response>}
+ */
+async function getCurrentRoll20Data(type, c) {
     try {
         // Query MongoDB
         const data = await Roll20Data.find({}).lean();
 
         if (!data || data.length === 0) {
-            return res.status(404).json({
+            return c.json({
                 success: false,
                 message: `No data found in the database.`
-            });
+            }, 404);
         }
 
-        res.json({
+        return c.json({
             success: true,
             data,
         });
     } catch (err) {
         console.error(err);
-        res.status(500).json({
+        return c.json({
             success: false,
             message: 'An error occurred.'
-        });
+        }, 500);
     }
 }

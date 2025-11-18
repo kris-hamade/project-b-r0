@@ -1,166 +1,126 @@
-const express = require('express');
-const router = express.Router();
 const controller = require('./controllers');
-const { authMiddleware, getCurrentJournal, getCurrentHandouts, verifyWebhookSecret } = require('./middlewares');
+const { authMiddleware, getCurrentJournal, getCurrentHandouts } = require('./middlewares');
 
-// GET Endpoints
-// Check Bot Status, no API key required
 /**
- * @swagger
- * /api/status:
- *   get:
- *     summary: Get the current status of the bot
- *     description: Returns a message indicating that the bot is up and running.
- *     responses:
- *       200:
- *         description: Success message indicating the bot is active.
+ * @typedef {Object} RouteDefinition
+ * @property {string} endpoint - URL path pattern (supports :param syntax)
+ * @property {'GET'|'POST'|'PUT'|'DELETE'|'PATCH'} method - HTTP method
+ * @property {Function} handler - Controller function (c) => {}
+ * @property {boolean} [requiresAuth=false] - Whether API key auth is required
+ * @property {string} [description] - Route description for documentation
  */
-router.get('/status', controller.status);
 
-// Check Bot Config, no API key required
 /**
- * @swagger
- * /api/config:
- *   get:
- *     summary: Get the bot configuration
- *     description: Retrieves the current configuration settings of the bot.
- *     responses:
- *       200:
- *         description: A JSON object containing the bot configuration settings.
+ * Route definitions array
+ * @type {RouteDefinition[]}
  */
-router.get('/config', controller.config);
+const routeDefinitions = [
+    // Health & Status
+    { 
+        endpoint: '/status', 
+        method: 'GET', 
+        handler: controller.status,
+        description: 'Get the current status of the bot'
+    },
+    { 
+        endpoint: '/config', 
+        method: 'GET', 
+        handler: controller.config,
+        description: 'Get the bot configuration'
+    },
+    { 
+        endpoint: '/uptime', 
+        method: 'GET', 
+        handler: controller.uptime,
+        description: 'Get bot uptime'
+    },
 
-// Check Bot Uptime, no API key required
+    // Chat History
+    { 
+        endpoint: '/chathistory', 
+        method: 'GET', 
+        handler: controller.getChatHistory,
+        requiresAuth: true,
+        description: 'Get chat history'
+    },
+    { 
+        endpoint: '/clearChatHistory', 
+        method: 'DELETE', 
+        handler: controller.clearChatHistory,
+        requiresAuth: true,
+        description: 'Clear chat history'
+    },
+
+    // Roll20 Data
+    { 
+        endpoint: '/currentJournal', 
+        method: 'GET', 
+        handler: getCurrentJournal,
+        description: 'Get Roll20 Journal Records'
+    },
+    { 
+        endpoint: '/currentHandouts', 
+        method: 'GET', 
+        handler: getCurrentHandouts,
+        description: 'Get Roll20 Handout Records'
+    },
+    { 
+        endpoint: '/uploadRoll20Data/:type', 
+        method: 'POST', 
+        handler: controller.uploadRoll20Data,
+        requiresAuth: true,
+        description: 'Upload Roll20 data'
+    },
+
+    // Webhooks
+    { 
+        endpoint: '/webhook', 
+        method: 'POST', 
+        handler: controller.webhookHandler,
+        requiresAuth: true,
+        description: 'Webhook handler'
+    },
+];
+
 /**
- * @swagger
- * /api/uptime:
- *   get:
- *     summary: Get bot uptime
- *     description: Retrieves the duration for which the bot has been running.
- *     responses:
- *       200:
- *         description: A message indicating how long the bot has been up.
+ * Validates route definition structure
+ * @param {RouteDefinition} route 
+ * @throws {Error} If route is invalid
  */
-router.get('/uptime', controller.uptime);
+function validateRoute(route) {
+    if (!route.endpoint || typeof route.endpoint !== 'string') {
+        throw new Error('Route must have a string endpoint');
+    }
+    if (!['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(route.method)) {
+        throw new Error(`Invalid HTTP method: ${route.method}`);
+    }
+    if (typeof route.handler !== 'function') {
+        throw new Error('Route handler must be a function');
+    }
+}
 
-// Get Chat History, API key required
+// Validate all routes at startup
+routeDefinitions.forEach((route, index) => {
+    try {
+        validateRoute(route);
+    } catch (error) {
+        throw new Error(`Invalid route at index ${index}: ${error.message}`);
+    }
+});
+
 /**
- * @swagger
- * /api/chatHistory:
- *   get:
- *     summary: Get chat history
- *     description: Retrieves the entire chat history.
- *     security:
- *       - ApiKeyAuth: []
- *     responses:
- *       200:
- *         description: A JSON array containing chat history records.
- *       500:
- *         description: Error message in case of a server error.
+ * Get available endpoints for 404 responses
+ * @returns {string[]}
  */
-router.get('/chathistory', authMiddleware, controller.getChatHistory);
+function getAvailableEndpoints() {
+    return routeDefinitions.map(route => `${route.method} ${route.endpoint}`);
+}
 
-// Get current Journal, no API key required
-/**
- * @swagger
- * /api/currentJournal:
- *   get:
- *     summary: Get Roll20 Journal Records
- *     description: Retrieves all roll20 journal records.
- *     responses:
- *       200:
- *         description: A JSON array containing roll20 journal records.
- *       500:
- *         description: Error message in case of a server error.
- */
-router.get('/currentJournal', getCurrentJournal);
-
-// Get current Handouts, no API key required
-/**
- * @swagger
- * /api/currentHandouts:
- *   get:
- *     summary: Get Roll20 Handout Records
- *     description: Retrieves all roll20 handouts records.
- *     responses:
- *       200:
- *         description: A JSON array containing roll20 handouts records.
- *       500:
- *         description: Error message in case of a server error.
- */
-router.get('/currentHandouts', getCurrentHandouts);
-
-// POST Endpoints
-// Endpoint to replace Roll20 JSON Data, API key required
-/**
- * @swagger
- * /api/uploadRoll20Data:
- *   post:
- *     summary: Upload Roll20 data
- *     description: Allows uploading of Roll20 data in JSON format. The data is used to update existing entries or add new ones.
- *     security:
- *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               file:
- *                 type: string
- *                 description: Path of the file to upload.
- *     responses:
- *       200:
- *         description: Success message with details of the update and new entries added.
- *       400:
- *         description: Error message indicating a bad request, such as missing file or wrong file format.
- *       500:
- *         description: Error message in case of a server error.
- */
-router.post('/uploadRoll20Data/:type', authMiddleware, controller.uploadRoll20Data);
-
-// Webhook endpoint
-/**
- * @swagger
- * /api/webhook:
- *   post:
- *     summary: Webhook handler
- *     description: Endpoint for handling incoming webhook data.
- *     security:
- *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               payload:
- *                 type: string
- *                 description: Webhook payload data.
- *     responses:
- *       200:
- *         description: Acknowledgment message indicating that webhook data is received.
- */
-router.post('/webhook', authMiddleware, controller.webhookHandler);
-
-// Delete Endpoints
-// Clear chat history, API key required
-/**
- * @swagger
- * /api/clearChatHistory:
- *   delete:
- *     summary: Clear chat history
- *     description: Clears the chat history from the database.
- *     security:
- *       - ApiKeyAuth: []
- *     responses:
- *       200:
- *         description: Success message indicating the chat history has been cleared.
- *       500:
- *         description: Error message in case of a server error.
- */
-router.delete('/clearChatHistory', authMiddleware, controller.clearChatHistory);
-
-module.exports = router;
+module.exports = {
+    routeDefinitions,
+    getAvailableEndpoints,
+    setAuthMiddleware: (middleware) => {
+        // This allows setting auth middleware if needed
+        authMiddleware.set = middleware;
+    }
+};

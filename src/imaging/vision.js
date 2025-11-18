@@ -1,31 +1,35 @@
-const axios = require('axios');
-
 const AZURE_VISION_ENDPOINT = process.env.AZURE_VISION_ENDPOINT;
 const AZURE_VISION_KEY = process.env.AZURE_VISION_KEY;
 
 async function getImageDescription(imageUrl) {
     try {
-        const response = await axios.post(`${AZURE_VISION_ENDPOINT}/computervision/imageanalysis:analyze`,
-            {
-                url: imageUrl
+        const url = new URL(`${AZURE_VISION_ENDPOINT}/computervision/imageanalysis:analyze`);
+        url.searchParams.set('visualFeatures', 'Categories');
+        url.searchParams.set('details', 'Landmarks');
+        url.searchParams.set('features', 'tags,objects,caption,denseCaptions,read,people');
+        url.searchParams.set('model-version', 'latest');
+        url.searchParams.set('language', 'en');
+        url.searchParams.set('gender-neutral-caption', 'false');
+        url.searchParams.set('api-version', '2023-02-01-preview');
+
+        const response = await fetch(url.toString(), {
+            method: 'POST',
+            headers: {
+                'Ocp-Apim-Subscription-Key': `${AZURE_VISION_KEY}`,
+                'Content-Type': 'application/json'
             },
-            {
-                headers: {
-                    'Ocp-Apim-Subscription-Key': `${AZURE_VISION_KEY}`,
-                    'Content-Type': 'application/json'
-                },
-                params: {
-                    'visualFeatures': 'Categories',
-                    'details': 'Landmarks',
-                    'features': 'tags,objects,caption,denseCaptions,read,people',
-                    'model-version': 'latest',
-                    'language': 'en',
-                    'gender-neutral-caption': 'false',
-                    'api-version': '2023-02-01-preview',
-                }
-            });
-        //console.log("Response:", response.data);
-        const transformedData = transformResponse(response.data);
+            body: JSON.stringify({
+                url: imageUrl
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        //console.log("Response:", data);
+        const transformedData = transformResponse(data);
         const confidenceThreshold = 0.5; // adjust as needed
         const filteredData = filterByConfidence(transformedData, confidenceThreshold);
         //console.log("Filtered data:", filteredData);
