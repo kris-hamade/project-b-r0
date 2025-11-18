@@ -139,69 +139,76 @@ exports.uploadRoll20Data = async (c) => {
       }, 400);
     }
 
-  console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded file:`, uploadedFileName);
+    console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded file:`, uploadedFileName);
 
-  // Check if the file is a JSON file
-  if (!uploadedFileName.endsWith(".json")) {
-    console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Invalid file type.`);
-    return c.json({
-      success: false,
-      message: "Only JSON files are allowed.",
-    }, 400);
-  }
-
-  // If the uploaded file is named 'test.json', don't make any modifications
-  if (uploadedFileName === "test.json") {
-    console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Test upload succeeded.`);
-    return c.json({
-      success: true,
-      message: "Test Upload Succeeded.",
-    });
-  }
-
-  try {
-    // Parse uploaded file
-    const uploadedData = JSON.parse(uploadedDataRaw);
-
-    console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded data retrieved.`);
-
-    let updateCount = 0;
-    let newEntryCount = 0;
-
-    // Get all existing documents
-    const existingDocs = await Roll20Data.find({});
-    const existingDocsMap = new Map();
-    existingDocs.forEach(doc => existingDocsMap.set(doc.Name, doc));
-
-    // Compare and update data
-    for (const uploadedEntry of uploadedData) {
-      const existingDoc = existingDocsMap.get(uploadedEntry.Name);
-      if (existingDoc) {
-        // If the Name exists in the server data, update the Bio if necessary
-        if (uploadedEntry.Bio !== existingDoc.Bio) {
-          existingDoc.Bio = uploadedEntry.Bio;
-          await existingDoc.save();
-          updateCount++;
-        }
-      } else {
-        // If the Name doesn't exist in the server data, add the new entry
-        const newDoc = new Roll20Data(uploadedEntry);
-        await newDoc.save();
-        newEntryCount++;
-      }
+    // Check if the file is a JSON file
+    if (!uploadedFileName.endsWith(".json")) {
+      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Invalid file type.`);
+      return c.json({
+        success: false,
+        message: "Only JSON files are allowed.",
+      }, 400);
     }
 
-    console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] ${updateCount} entries updated, ${newEntryCount} new entries added.`);
+    // If the uploaded file is named 'test.json', don't make any modifications
+    if (uploadedFileName === "test.json") {
+      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Test upload succeeded.`);
+      return c.json({
+        success: true,
+        message: "Test Upload Succeeded.",
+      });
+    }
 
-    return c.json({
-      success: true,
-      message: `${updateCount} entries updated, ${newEntryCount} new entries added.`,
-    });
+    try {
+      // Parse uploaded file
+      const uploadedData = JSON.parse(uploadedDataRaw);
+
+      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded data retrieved.`);
+
+      let updateCount = 0;
+      let newEntryCount = 0;
+
+      // Get all existing documents
+      const existingDocs = await Roll20Data.find({});
+      const existingDocsMap = new Map();
+      existingDocs.forEach(doc => existingDocsMap.set(doc.Name, doc));
+
+      // Compare and update data
+      for (const uploadedEntry of uploadedData) {
+        const existingDoc = existingDocsMap.get(uploadedEntry.Name);
+        if (existingDoc) {
+          // If the Name exists in the server data, update the Bio if necessary
+          if (uploadedEntry.Bio !== existingDoc.Bio) {
+            existingDoc.Bio = uploadedEntry.Bio;
+            await existingDoc.save();
+            updateCount++;
+          }
+        } else {
+          // If the Name doesn't exist in the server data, add the new entry
+          const newDoc = new Roll20Data(uploadedEntry);
+          await newDoc.save();
+          newEntryCount++;
+        }
+      }
+
+      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] ${updateCount} entries updated, ${newEntryCount} new entries added.`);
+
+      return c.json({
+        success: true,
+        message: `${updateCount} entries updated, ${newEntryCount} new entries added.`,
+      });
+    } catch (err) {
+      console.error(err);
+      return c.json({
+        success: false,
+        message: "An error occurred.",
+      }, 500);
+    }
   } catch (err) {
-    console.error(err);
+    console.error(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] An error occurred while processing the file:`, err);
     return c.json({
       success: false,
-      message: "An error occurred.",
+      message: "An error occurred while processing the file.",
     }, 500);
   }
 };

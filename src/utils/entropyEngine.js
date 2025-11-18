@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const moment = require('moment');
 
 /**
  * API-based entropy engine for cryptographically secure random number generation
@@ -10,6 +11,8 @@ class ApiEntropyEngine {
     this.batchSize = batchSize;
     this.buffer = [];
     this.fetching = null;
+    this.fetchCount = 0;
+    this.totalValuesFetched = 0;
   }
 
   /**
@@ -20,8 +23,14 @@ class ApiEntropyEngine {
     if (this.fetching) return this.fetching;
 
     this.fetching = (async () => {
+      const bufferSizeBefore = this.buffer.length;
+      const timestamp = moment().format("YYYY-MM-DD HH:mm:ss");
+      const url = `${this.apiBaseUrl}/v1/entropy/uint32?count=${this.batchSize}`;
+      
       try {
-        const url = `${this.apiBaseUrl}/v1/entropy/uint32?count=${this.batchSize}`;
+        console.log(`[${timestamp}] [EntropyEngine] Fetching new entropy from API: ${url}`);
+        console.log(`[${timestamp}] [EntropyEngine] Buffer status before fetch: ${bufferSizeBefore} values remaining`);
+        
         const response = await fetch(url);
         
         if (!response.ok) {
@@ -38,16 +47,21 @@ class ApiEntropyEngine {
           this.buffer.push(n >>> 0); // Ensure uint32
         }
         
-        console.log(`[EntropyEngine] Fetched ${json.numbers.length} entropy values from API`);
+        this.fetchCount++;
+        this.totalValuesFetched += json.numbers.length;
+        
+        console.log(`[${timestamp}] [EntropyEngine] ✓ SUCCESS: Fetched ${json.numbers.length} new entropy values from your API`);
+        console.log(`[${timestamp}] [EntropyEngine] Buffer status after fetch: ${this.buffer.length} values (added ${json.numbers.length}, had ${bufferSizeBefore})`);
+        console.log(`[${timestamp}] [EntropyEngine] Total fetches: ${this.fetchCount}, Total values fetched: ${this.totalValuesFetched}`);
       } catch (error) {
-        console.error('[EntropyEngine] Entropy fetch failed:', error.message);
+        console.error(`[${timestamp}] [EntropyEngine] ✗ FAILED: Entropy fetch failed from ${url}:`, error.message);
         // Fallback: fill buffer with crypto.getRandomValues
         const fallbackValues = new Uint32Array(Math.min(100, this.batchSize));
         crypto.getRandomValues(fallbackValues);
         for (const n of fallbackValues) {
           this.buffer.push(n >>> 0);
         }
-        console.log(`[EntropyEngine] Using fallback entropy (${fallbackValues.length} values)`);
+        console.log(`[${timestamp}] [EntropyEngine] Using fallback entropy (${fallbackValues.length} values) - NOT using your API`);
       } finally {
         this.fetching = null;
       }
@@ -75,6 +89,8 @@ class ApiEntropyEngine {
 
     // Prefetch when buffer is low (at 25% capacity)
     if (this.buffer.length < this.batchSize / 4) {
+      const threshold = Math.floor(this.batchSize / 4);
+      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] [EntropyEngine] Buffer low (${this.buffer.length} < ${threshold}), triggering refill from API...`);
       void this.fillBuffer();
     }
 
