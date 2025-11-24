@@ -1,0 +1,372 @@
+# Project Context
+
+This repository contains a Discord bot and a local classifier microservice.
+
+The goal of the system is:
+
+1. The **Discord bot** is the user-facing piece (commands, chat replies, tools, personas, etc.).
+
+2. The **Classifier API** is a deterministic, heuristic-based microservice that decides:
+   - Whether the bot should respond at all.
+   - How confident it is in that decision.
+   - The message topic (dnd / tech / gaming / other).
+   - The sensitivity level (low / medium / high).
+
+3. The bot uses the classifier output as a **gate** before calling expensive external LLM APIs.
+
+The classifier DOES NOT use machine learning or LLMs. It is pure string/keyword heuristics and runs as its own HTTP service.
+
+The bot continues to use external LLM APIs (e.g., OpenAI or similar) for generating responses, but only after the classifier says it's likely appropriate to respond.
+
+---
+
+# High-Level Behavior
+
+Incoming Discord messages go through this pipeline:
+
+1. Discord event handler receives a message.
+2. Basic filters (ignore bot's own messages, system messages, DMs if not supported, etc.).
+3. Build a **classification request**:
+   - `message`: message content.
+   - `recentMessages`: a small window of recent channel messages for context.
+   - `channelName`: Discord channel name.
+4. Call the **Classifier API** (`POST /classify`).
+5. Use the classifier result:
+   - If `shouldRespond === true` **and** `confidence >= threshold` (e.g., 0.7):
+     - Build an LLM request with topic/sensitivity-aware system prompt.
+     - Call the external LLM API.
+     - Send the reply back to Discord.
+   - Otherwise:
+     - Do not call the LLM; skip responding.
+6. For high-sensitivity content:
+   - The classifier marks `sensitivity: "high"` and `shouldRespond: true`.
+   - The bot uses a safer, more empathetic response style (or routes to a specific handler).
+
+Cursor should preserve and improve this architecture rather than reinvent it.
+
+---
+
+# Tech Stack Rules
+
+- **Bot**
+  - Language: **TypeScript**
+  - Runtime: **Node.js 18+ / 20+**
+  - Discord library: likely `discord.js` (or similar); keep using what the repo already uses.
+  - LLM access: external HTTP APIs (e.g., OpenAI-compatible). No local LLM logic here.
+
+- **Classifier**
+  - Language: **TypeScript**
+  - Runtime: **Node.js 18+ / 20+**
+  - Web framework: **Hono** (NOT Express, NOT Fastify).
+  - Implementation: Pure heuristics (string matching, keyword lists, simple rules).
+  - No Python, no ML libraries, no LLM calls.
+
+---
+
+# File Structure (Expected / Preferred)
+
+Bot side (example layout):
+
+- `src/bot/index.ts`            → Discord client setup, event wiring.
+- `src/bot/handlers/message.ts` → Message create handler (gateway into classifier/LLM).
+- `src/services/classifierClient.ts`  
+  - Client wrapper for calling the classifier microservice.
+- `src/services/llmClient.ts`  
+  - Client wrapper for external LLM API (OpenAI-style).
+- `src/prompting/`              → Prompt builders, persona/system prompts.
+- `src/config.ts`               → Global config (API URLs, thresholds, feature flags).
+
+Classifier side (in same repo or separate package):
+
+- `src/classifier/server.ts`    → Hono HTTP server setup and bootstrap.
+- `src/classifier/routes.ts`    → `/classify` and `/healthz` route definitions.
+- `src/classifier/heuristics.ts`→ Core classification logic (pure functions).
+- `src/classifier/types.ts`     → Shared TS interfaces (request/response types).
+- `src/classifier/config.ts`    → Keyword lists, thresholds, constants.
+
+Cursor should follow and extend this structure instead of scattering logic.
+
+---
+
+# Classifier API Contract
+
+The Classifier API is a separate HTTP microservice.
+
+**POST `/classify`**
+
+Request JSON:
+
+```ts
+{
+  message: string;              // Required: message text to classify
+  recentMessages?: string[];    // Optional: recent channel messages
+  channelName?: string;         // Optional: Discord channel name
+}
+```
+
+Response JSON:
+
+```ts
+{
+  shouldRespond: boolean;       // Primary gate: should the bot respond?
+  confidence: number;           // 0.0–1.0 confidence in decision
+  isQuestion: boolean;          // whether the message is a question
+  topic: "dnd" | "tech" | "gaming" | "other";
+  sensitivity: "low" | "medium" | "high";
+  reason: string;               // human-readable explanation
+}
+```
+
+**GET /healthz**
+
+Response:
+
+```json
+{ "status": "ok" }
+```
+
+Rules for Cursor:
+
+Do NOT change the /classify request/response shape unless explicitly asked.
+
+Do NOT introduce new endpoints for classification without a clear need.
+
+Any new logic for classification should be implemented in heuristics.ts and wired via routes.ts.
+
+For full details of classifier heuristics and keyword lists, refer to the dedicated classifier documentation file in the repo (e.g., docs/classifier-api.md).
+
+---
+
+# Classifier Logic Summary (for Cursor)
+
+Classifier behavior is heuristic and deterministic:
+
+## normalize(text)
+
+Lowercase + trim for all classification logic.
+
+## isQuestion detection
+
+True if:
+- Ends with `?`, or
+- Starts with a question word (who/what/when/where/why/how/etc.), or
+- Contains `?` anywhere, or
+- Starts with question phrases like "tell me", "explain", "help me", etc.
+
+## topic detection → "dnd" | "tech" | "gaming" | "other"
+
+First use channelName hints:
+- "dnd" | "d&d" | "tabletop" | "aeterna" → "dnd"
+- "tech" | "dev" | "code" | "infra" | "server" → "tech"
+- "gaming" | "games" → "gaming"
+
+Then use keyword lists in config.ts:
+- DnD keywords: classes, races, spells, mechanics, etc.
+- Tech keywords: languages, infra, tools, CI/CD, cloud, etc.
+- Gaming keywords: game names, slang, platforms, etc.
+
+Default to "other" if nothing matches.
+
+## sensitivity detection → "low" | "medium" | "high"
+
+- "high" for self-harm / suicide / overdose / explicit high-risk terms.
+- "medium" for depression, anxiety, trauma, abuse, relationship crisis, etc.
+- "low" for everything else.
+
+High-sensitivity terms take precedence.
+
+## shouldRespond + confidence + reason
+
+Use a priority-based rule system:
+
+### Direct bot triggers (highest priority)
+
+If message contains bot names/aliases ("b-r0", "b-r0 3.0", "bot", "@bot", "hey bot"):
+- `shouldRespond = true`
+- `confidence ≈ 0.95`
+- `reason = "Message directly addresses the bot."`
+
+### High sensitivity
+
+If `sensitivity === "high"`:
+- Always `shouldRespond = true`
+- `confidence ≈ 0.8–0.9`
+- `reason` mentioning high-sensitivity and safety context.
+
+### Short greetings
+
+If NOT a question, very short (e.g., < 10 chars) and in a greeting list ("hi", "hey", "yo", "hello", "sup"):
+- `shouldRespond = false`
+- `confidence ≈ 0.7`
+- `reason = "Short greeting; ignoring to reduce noise."`
+
+### Questions
+
+If `isQuestion === true`:
+- If topic is "dnd", "tech", "gaming":
+  - `shouldRespond = true`
+  - `confidence ≈ 0.9`
+  - `reason = "User asked a [TOPIC] question."`
+- Else:
+  - `shouldRespond = true`
+  - `confidence ≈ 0.85`
+  - `reason = "User asked a general question."`
+
+### Ongoing conversation
+
+If any recentMessages look like questions (contain `?`):
+- `shouldRespond = true`
+- `confidence ≈ 0.75`
+- `reason = "Ongoing conversation that includes questions; responding."`
+
+### Default
+
+Otherwise:
+- `shouldRespond = false`
+- `confidence ≈ 0.8`
+- `reason = "No strong signal to respond (not a question, no direct trigger)."`
+
+All of these rules should live in heuristics.ts as pure functions, with keyword lists and thresholds in config.ts.
+
+---
+
+# Bot Integration Rules
+
+Cursor should wire the classifier into the bot's message flow as follows:
+
+## 1. Message handler
+
+In the main message handler (e.g., `src/bot/handlers/message.ts`):
+
+Ignore:
+- Messages from the bot itself.
+- System messages.
+- Any channels/conditions explicitly flagged as ignored.
+
+Build payload:
+
+```ts
+const payload = {
+  message: discordMessage.content,
+  recentMessages: lastNMessagesInChannel.map(m => m.content),
+  channelName: discordMessage.channel?.name ?? "unknown"
+};
+```
+
+Call classifier client:
+
+```ts
+import { classifyMessage } from "../services/classifierClient";
+
+const classification = await classifyMessage(payload);
+```
+
+## 2. Gating logic
+
+Example pattern:
+
+```ts
+const { shouldRespond, confidence } = classification;
+
+const CONFIDENCE_THRESHOLD = 0.7; // configurable in config.ts
+
+if (!shouldRespond || confidence < CONFIDENCE_THRESHOLD) {
+  // Skip calling LLM; log reason for debugging
+  logger.debug("Skipping response", { reason: classification.reason, classification });
+  return;
+}
+```
+
+## 3. LLM prompt building
+
+Use classification to shape the LLM prompt:
+
+Use topic to select persona / system prompt:
+
+```ts
+function buildSystemPrompt(classification: ClassifyResponse): string {
+  let base = "You are a helpful Discord bot assistant.";
+
+  switch (classification.topic) {
+    case "dnd":
+      base += " You are highly knowledgeable about Dungeons & Dragons 5e and related tabletop RPG topics.";
+      break;
+    case "tech":
+      base += " You are an experienced software engineer and DevOps practitioner.";
+      break;
+    case "gaming":
+      base += " You are a gaming enthusiast familiar with modern games and terminology.";
+      break;
+    default:
+      // other
+      break;
+  }
+
+  if (classification.sensitivity === "high") {
+    base += " The user content may be emotionally sensitive or high-risk. Respond with empathy, avoid giving medical or legal advice, encourage seeking real-world support, and provide general supportive guidance.";
+  } else if (classification.sensitivity === "medium") {
+    base += " The user may be experiencing emotional difficulty. Respond with understanding and kindness.";
+  }
+
+  return base;
+}
+```
+
+Then call the external LLM client:
+
+```ts
+const system = buildSystemPrompt(classification);
+const llmResponse = await llmClient.chat({
+  system,
+  user: discordMessage.content,
+  // optionally: include some of recentMessages as context
+});
+```
+
+## 4. Error handling + fallback
+
+If the classifier is unavailable:
+
+The classifier client should throw or return a clear error.
+
+The bot should have a fallback policy, e.g.:
+
+- Option A: respond to nothing (fail closed).
+- Option B: respond only on explicit triggers (e.g., name mention, prefix).
+- Option C: respond to all messages (fail open, only if acceptable).
+
+Cursor should not silently swallow classifier errors; log diagnostic information.
+
+---
+
+# Code Style & Testing
+
+Use strict TypeScript (`strict: true`).
+
+Implement small, pure functions in `heuristics.ts` with clear unit tests.
+
+Add tests for:
+- `isQuestion` behavior.
+- Topic detection for typical DnD / tech / gaming messages.
+- Sensitivity detection for high/medium cases.
+- `shouldRespond` decisions for:
+  - Direct bot mentions.
+  - Clear questions.
+  - Short greetings.
+  - High-sensitivity content.
+
+Use Jest or Vitest, in a folder like:
+- `src/classifier/__tests__/`.
+
+---
+
+# What NOT to Do
+
+- Do NOT convert the classifier to Python or any non-Node language.
+- Do NOT integrate ML or LLM calls into the classifier service.
+- Do NOT let the classifier call external APIs (it must stay pure/local and fast).
+- Do NOT change the `/classify` API contract without explicit instructions.
+- Do NOT bypass the classifier for normal messages; all non-command chat should go through it unless explicitly configured otherwise.
+- Do NOT introduce new message flows that call the LLM directly without going through the classifier, except for:
+  - Explicit commands (e.g., `/ask`, `/imagine`, etc.) where the user clearly requested the bot's attention.
+

@@ -4,6 +4,7 @@ const {
   generateEventData,
   generateImageResponse,
   generateResponse,
+  shouldRespondCheck,
 } = require("../openai/gpt");
 const { generateImage } = require("../imaging/imageGeneration");
 const { preprocessUserInput } = require("../utils/preprocessor");
@@ -31,6 +32,9 @@ const WebhookSubs = require("../models/webhookSub");
 const { loadWebhookSubs } = require("../utils/webhook");
 const { DiceRoll } = require("@dice-roller/rpg-dice-roller");
 const { initEntropyEngine, createDiceRng } = require("../utils/entropyEngine");
+const { classifyMessage } = require("../services/classifierClient");
+const { buildSystemPrompt, buildUserPrompt } = require("../prompting/promptBuilder");
+const { getClassifierConfidenceThreshold } = require("../utils/config");
 
 // Include the required packages for slash commands
 const { REST } = require("@discordjs/rest");
@@ -89,16 +93,91 @@ async function handleMessage(message) {
     return;
   }
 
+  // Skip if message mentions other users (not the bot) - don't respond to @ mentions of other people
+  if (!(message.channel instanceof Discord.DMChannel)) {
+    const mentionedUsers = message.mentions.users;
+    const botMentioned = message.mentions.has(client.user.id);
+    const otherUsersMentioned = mentionedUsers.filter(user => user.id !== client.user.id && !user.bot);
+    
+    // If other users (not the bot) are mentioned, skip responding
+    if (otherUsersMentioned.size > 0) {
+      console.log(`[Bot] Skipping response: Message mentions other users (not the bot)`);
+      return;
+    }
+    
+    // Also skip if @everyone or @here is mentioned
+    if (message.mentions.everyone || message.mentions.roles.size > 0) {
+      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles`);
+      return;
+    }
+  }
 
-  // Skip if the bot is not mentioned or if other mentions are present
-  if (
-    !(message.channel instanceof Discord.DMChannel) &&
-    (!message.mentions.has(client.user.id) ||
-      message.mentions.everyone ||
-      message.mentions.roles.size > 0 ||
-      message.mentions.users.size > 1)
-  )
-    return;
+  // ============================ Classifier Integration =============================
+  // Get recent messages for classifier context (last 5-10 messages from Discord API)
+  let recentMessages = [];
+  try {
+    const messages = await message.channel.messages.fetch({ limit: 10 });
+    recentMessages = Array.from(messages.values())
+      .filter(m => m.id !== message.id && !m.author.bot) // Exclude current message and bot messages
+      .map(m => m.content)
+      .slice(0, 10) // Take up to 10 messages
+      .reverse(); // Reverse to get chronological order (oldest first)
+    console.log(`[Context] Fetched ${recentMessages.length} recent messages from Discord API`);
+  } catch (error) {
+    console.error('[Classifier] Failed to fetch recent messages:', error);
+    // Continue with empty recentMessages array
+  }
+
+  // Classify the message using the classifier API
+  let classification = null;
+  let shouldUseClassifier = true;
+  
+  try {
+    const channelName = message.channel instanceof Discord.DMChannel 
+      ? 'dm' 
+      : (message.channel.name || 'unknown');
+    
+    classification = await classifyMessage({
+      message: message.content,
+      recentMessages: recentMessages,
+      channelName: channelName,
+    });
+
+    console.log(`[Classifier] Classification result:`, {
+      shouldRespond: classification.shouldRespond,
+      confidence: classification.confidence,
+      topic: classification.topic,
+      sensitivity: classification.sensitivity,
+      reason: classification.reason,
+    });
+
+    // Check if we should respond based on classifier
+    const confidenceThreshold = getClassifierConfidenceThreshold();
+    
+    if (!classification.shouldRespond || classification.confidence < confidenceThreshold) {
+      console.log(`[Classifier] Skipping response: ${classification.reason} (confidence: ${classification.confidence})`);
+      return; // Don't respond - classifier says we shouldn't
+    }
+  } catch (error) {
+    console.error('[Classifier] Error calling classifier API:', error.message);
+    
+    // Fallback behavior: if classifier is unavailable, use legacy mention check
+    // This ensures the bot doesn't break if classifier service is down
+    shouldUseClassifier = false;
+    
+    // Legacy mention check as fallback (only needed if classifier fails)
+    // Note: The check above already handles other user mentions, but we keep this for consistency
+    if (
+      !(message.channel instanceof Discord.DMChannel) &&
+      !message.mentions.has(client.user.id)
+    ) {
+      console.log('[Classifier] Fallback: Bot not mentioned, skipping response');
+      return;
+    }
+    
+    console.log('[Classifier] Fallback: Proceeding without classification (classifier unavailable)');
+  }
+  // ============================ End Classifier Integration =============================
 
   // ============================ Image Processing =============================
   let imageDescription;
@@ -149,7 +228,40 @@ async function handleMessage(message) {
     );
   }
 
-  // Show as typing in the discord channel
+  // ============================ Pre-Response Quality Check =============================
+  // Double-check with LLM if we should actually respond (quality/timing check)
+  if (classification && shouldUseClassifier) {
+    try {
+      const channelName = message.channel instanceof Discord.DMChannel 
+        ? 'dm' 
+        : (message.channel.name || 'unknown');
+      
+      const qualityCheck = await shouldRespondCheck(
+        message.content,
+        classification,
+        recentMessages,
+        channelName,
+        'gpt-4o-mini' // Use cheaper model for this check
+      );
+
+      console.log(`[QualityCheck] Result:`, {
+        shouldRespond: qualityCheck.shouldRespond,
+        reason: qualityCheck.reason
+      });
+
+      if (!qualityCheck.shouldRespond) {
+        console.log(`[QualityCheck] Skipping response: ${qualityCheck.reason}`);
+        return; // Don't respond - quality check says it's not appropriate
+      }
+    } catch (error) {
+      console.error('[QualityCheck] Error during quality check:', error);
+      // On error, proceed anyway (fail open) since classifier already approved
+      console.log('[QualityCheck] Check failed, proceeding based on classifier approval');
+    }
+  }
+  // ============================ End Pre-Response Quality Check =============================
+
+  // Show as typing in the discord channel - ONLY NOW that we've confirmed we're responding
   message.channel.sendTyping();
 
   console.log("THIS CURRENT PERSONALITY", currentPersonality);
@@ -188,7 +300,9 @@ async function handleMessage(message) {
         userConfig.model,
         userConfig.temperature,
         imageDescription,
-        channelId
+        channelId,
+        classification, // Pass classification to enhance prompts
+        recentMessages // Pass recent messages for conversation context
       );
     }
 

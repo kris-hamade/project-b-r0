@@ -3,7 +3,7 @@ const Schema = mongoose.Schema;
 
 const ChatConfigSchema = new Schema({
   username: { type: String, required: true },
-  currentPersonality: { type: String, default: "b-r0" },
+  currentPersonality: { type: String, default: "assistant" },
   model: { type: String, default: "gpt-5-chat-latest" },
   temperature: { type: Number, default: 1 },
   channelID: { type: String, required: true },

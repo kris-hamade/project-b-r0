@@ -48,7 +48,12 @@ function getUserAllowedModels() {
     // Convert ALLOWED_MODELS to an array of strings or default to an empty array if undefined
     let allowedModels = process.env.ALLOWED_USER_GPT_MODELS ? process.env.ALLOWED_USER_GPT_MODELS.split(",") : [];
     return allowedModels;
+}
 
+function getClassifierConfidenceThreshold() {
+    // Convert CLASSIFIER_CONFIDENCE_THRESHOLD to a float or default to 0.7
+    let threshold = parseFloat(process.env.CLASSIFIER_CONFIDENCE_THRESHOLD) || 0.7;
+    return threshold;
 }
 
 function getVersion() {
@@ -78,5 +83,6 @@ module.exports = {
     getModelTemperatures,
     getTokenLimits,
     getUptime,
-    getUserAllowedModels
+    getUserAllowedModels,
+    getClassifierConfidenceThreshold
 };

@@ -14,7 +14,9 @@ async function generateResponse(
   model,
   temperature,
   imageDescription,
-  channelId
+  channelId,
+  classification = null,
+  recentMessages = []
 ) {
 
   const chatHistory = await getHistory(nickname, personality, channelId);
@@ -24,45 +26,180 @@ async function generateResponse(
   console.log("Using D&D Data:", dndData); // Log the D&D Data (if any)
   console.log("Using History:", chatHistory); // Log the History (if any)
   console.log("Using Image Description:", imageDescription); // Log the Image Description (if any)
+  console.log("Using Recent Messages:", recentMessages.length, "messages"); // Log recent messages count
+  if (classification) {
+    console.log("Using Classification:", classification); // Log the classification (if any)
+  }
+
+  // Build classification-aware system prompt
+  let classificationPrompt = "";
+  if (classification) {
+    const { buildSystemPrompt } = require("../prompting/promptBuilder");
+    classificationPrompt = buildSystemPrompt(classification, persona);
+  }
 
   try {
-    const response = await openai.chat.completions.create({
-      model: model,
-      messages: [
-        {
-          role: "system",
-          content: "Make sure your response is as concise as possible"
-        },
-        {
-          role: "system",
-          content: await personaBuilder(persona),
-        },
-        {
-          role: "system",
-          content:
-            "--START DUNGEONS AND DRAGONS CAMPAIGN DATA-- " +
-            dndData +
-            " --END DUNGEONS AND DRAGONS CAMPAIGN DATA--",
-        },
-        {
-          role: "system",
-          content: "Given the following key elements from an image: " + imageDescription + " Please provide a comprehensive description of the image.",
-        },
-        {
-          role: "system",
-          content:
-            "--START CHAT HISTORY-- " + chatHistory + " --END CHAT HISTORY--",
-        },
-        {
-          role: "user",
-          content: `${nickname} says: ${prompt}`,
-        },
-      ],
-      max_completion_tokens: getTokenLimits().chat_input_limit,
-      temperature: temperature
-    });
+    const messages = [
+      {
+        role: "system",
+        content: "Make sure your response is as concise as possible"
+      },
+      {
+        role: "system",
+        content: await personaBuilder(persona),
+      },
+    ];
 
-    const message = response.choices[0].message.content;
+    // Add classification-based context if available and not empty
+    if (classification && classificationPrompt && classificationPrompt.trim().length > 0) {
+      messages.push({
+        role: "system",
+        content: classificationPrompt,
+      });
+    }
+
+    messages.push(
+      {
+        role: "system",
+        content:
+          "--START DUNGEONS AND DRAGONS CAMPAIGN DATA-- " +
+          dndData +
+          " --END DUNGEONS AND DRAGONS CAMPAIGN DATA--",
+      },
+    );
+
+    // Add image description if available
+    if (imageDescription) {
+      messages.push({
+        role: "system",
+        content: "Given the following key elements from an image: " + imageDescription + " Please provide a comprehensive description of the image.",
+      });
+    }
+
+    // Add recent conversation context if available
+    if (recentMessages && recentMessages.length > 0) {
+      const recentContext = recentMessages
+        .slice(-5) // Use last 5 messages for context (to avoid token bloat)
+        .map((msg, idx) => `[${idx + 1}] ${msg}`)
+        .join('\n');
+      
+      messages.push({
+        role: "system",
+        content: `--START RECENT CONVERSATION CONTEXT--\n${recentContext}\n--END RECENT CONVERSATION CONTEXT--`,
+      });
+    }
+
+    messages.push(
+      {
+        role: "system",
+        content:
+          "--START CHAT HISTORY-- " + chatHistory + " --END CHAT HISTORY--",
+      },
+      {
+        role: "user",
+        content: `${nickname} says: ${prompt}`,
+      }
+    );
+
+    // Determine if we should use web search (only for questions)
+    const enableWebSearch = classification && classification.isQuestion && process.env.WEB_SEARCH_ENABLED === 'true';
+    
+    // Use search-enabled model if web search is enabled
+    let modelToUse = model;
+    if (enableWebSearch) {
+      // Map regular models to their search-enabled variants
+      const searchModelMap = {
+        'gpt-4o': 'gpt-4o-search-preview',
+        'gpt-4o-mini': 'gpt-4o-mini-search-preview',
+        'gpt-5': 'gpt-5-search-api',
+        'gpt-5-chat-latest': 'gpt-5-search-api',
+      };
+      
+      modelToUse = searchModelMap[model] || 'gpt-4o-search-preview'; // Default to gpt-4o-search-preview
+      console.log(`[WebSearch] Using search-enabled model: ${modelToUse}`);
+    }
+
+    // Build web_search_options if enabled
+    const webSearchOptions = enableWebSearch ? {
+      // Add user location if configured (optional)
+      ...(process.env.WEB_SEARCH_COUNTRY && {
+        user_location: {
+          type: 'approximate',
+          approximate: {
+            ...(process.env.WEB_SEARCH_COUNTRY && { country: process.env.WEB_SEARCH_COUNTRY }),
+            ...(process.env.WEB_SEARCH_CITY && { city: process.env.WEB_SEARCH_CITY }),
+            ...(process.env.WEB_SEARCH_REGION && { region: process.env.WEB_SEARCH_REGION }),
+            ...(process.env.WEB_SEARCH_TIMEZONE && { timezone: process.env.WEB_SEARCH_TIMEZONE }),
+          },
+        },
+      }),
+    } : undefined;
+
+    // Make the API call with web search if enabled
+    // Note: Search-enabled models don't support temperature parameter
+    const requestParams = {
+      model: modelToUse,
+      messages: messages,
+      max_completion_tokens: getTokenLimits().chat_input_limit,
+      ...(webSearchOptions && { web_search_options: webSearchOptions }),
+    };
+    
+    // Only add temperature if not using a search-enabled model
+    if (!enableWebSearch) {
+      requestParams.temperature = temperature;
+    }
+    
+    let response;
+    try {
+      response = await openai.chat.completions.create(requestParams);
+    } catch (error) {
+      // If web search fails (500 error, model not available, etc.), fallback to regular model
+      if (enableWebSearch && (error.status === 500 || error.status === 404 || error.type === 'server_error' || error.type === 'invalid_request_error')) {
+        console.warn(`[WebSearch] Search-enabled model failed (${error.status || error.type}), falling back to regular model: ${model}`);
+        console.warn(`[WebSearch] Error details: ${error.message}`);
+        
+        // Fallback to regular model without web search
+        const fallbackParams = {
+          model: model,
+          messages: messages,
+          max_completion_tokens: getTokenLimits().chat_input_limit,
+          temperature: temperature,
+        };
+        
+        response = await openai.chat.completions.create(fallbackParams);
+        console.log('[WebSearch] Successfully used fallback model without web search');
+      } else {
+        // Re-throw if it's not a web search related error
+        throw error;
+      }
+    }
+    
+    // Log web search usage if enabled
+    if (enableWebSearch && response.choices[0].message.annotations) {
+      const citations = response.choices[0].message.annotations.filter(a => a.type === 'url_citation');
+      console.log(`[WebSearch] Response includes ${citations.length} web citations`);
+      citations.forEach((citation, idx) => {
+        console.log(`[WebSearch] Citation ${idx + 1}: ${citation.url_citation.title} - ${citation.url_citation.url}`);
+      });
+    }
+
+    let message = response.choices[0].message.content;
+    
+    // Handle citations if web search was used
+    if (enableWebSearch && response.choices[0].message.annotations) {
+      const urlCitations = response.choices[0].message.annotations
+        .filter(a => a.type === 'url_citation')
+        .map(a => a.url_citation);
+      
+      // Add citations to the end of the message for Discord display
+      if (urlCitations.length > 0) {
+        const citationText = '\n\n**Sources:**\n' + urlCitations.map((cite, idx) => 
+          `${idx + 1}. [${cite.title}](${cite.url})`
+        ).join('\n');
+        message += citationText;
+      }
+    }
+    
     // Log the number of tokens used
     console.log("Prompt tokens used:", response.usage.prompt_tokens);
     console.log(
@@ -113,6 +250,82 @@ async function generateWebhookReport(message) {
   } catch (error) {
     console.error("Error generating webhook report response:", error);
     return "Sorry, I couldn't generate a webhook report based on the data received";
+  }
+}
+
+/**
+ * Check if the bot should respond to a message using LLM judgment
+ * This is a quality/timing check after the classifier has already said "yes"
+ * @param {string} messageContent - The message content
+ * @param {Object} classification - Classification result from classifier
+ * @param {string[]} recentMessages - Recent messages for context
+ * @param {string} channelName - Discord channel name
+ * @param {string} model - Model to use (defaults to a fast/cheap model)
+ * @returns {Promise<{shouldRespond: boolean, reason: string}>}
+ */
+async function shouldRespondCheck(messageContent, classification, recentMessages = [], channelName = 'unknown', model = null) {
+  // Use a cheaper/faster model for this check, or use the provided model
+  const checkModel = model || 'gpt-4o-mini'; // Use a cheaper model for this quick check
+  
+  // Build context about recent messages
+  const recentContext = recentMessages.length > 0 
+    ? `Recent messages in channel: ${recentMessages.slice(-3).join(' | ')}`
+    : 'No recent messages';
+
+  const systemPrompt = `You are a quality control assistant for a Discord bot. Your job is to determine if the bot should respond to a message.
+
+Consider:
+1. Would a response be helpful, accurate, and valuable?
+2. Is this a good time to respond, or would it be annoying/interrupting?
+3. Is the message actually directed at the bot or just casual chat?
+4. Would responding add value or just create noise?
+5. Is the conversation already ongoing between other users?
+
+The classifier has already determined this message might warrant a response, but you need to apply human-like judgment about timing, quality, and appropriateness.
+
+Respond with ONLY a JSON object in this exact format:
+{"shouldRespond": true/false, "reason": "brief explanation"}`;
+
+  const userPrompt = `Message to evaluate: "${messageContent}"
+
+Channel: ${channelName}
+Topic: ${classification.topic}
+Sensitivity: ${classification.sensitivity}
+Is Question: ${classification.isQuestion}
+Classifier Reason: ${classification.reason}
+
+${recentContext}
+
+Should the bot respond? Consider if the response would be quality, accurate, helpful, and not annoying or poorly timed.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: checkModel,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_completion_tokens: 150, // Keep it short and cheap
+      temperature: 0.3, // Lower temperature for more consistent judgment
+      response_format: { type: 'json_object' } // Force JSON response
+    });
+
+    const result = JSON.parse(response.choices[0].message.content);
+    
+    // Validate response
+    if (typeof result.shouldRespond !== 'boolean' || typeof result.reason !== 'string') {
+      console.warn('[shouldRespondCheck] Invalid response format, defaulting to true');
+      return { shouldRespond: true, reason: 'Invalid check response, proceeding' };
+    }
+
+    return {
+      shouldRespond: result.shouldRespond,
+      reason: result.reason
+    };
+  } catch (error) {
+    console.error('[shouldRespondCheck] Error during response check:', error);
+    // On error, default to proceeding (fail open) since classifier already said yes
+    return { shouldRespond: true, reason: 'Check failed, proceeding based on classifier' };
   }
 }
 
@@ -260,5 +473,6 @@ module.exports = {
   generateResponse,
   generateEventData,
   generateImageResponse,
-  generateWebhookReport
+  generateWebhookReport,
+  shouldRespondCheck
 };
