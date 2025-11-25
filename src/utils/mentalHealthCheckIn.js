@@ -160,56 +160,81 @@ Keep it personal and human-like.`;
 
 /**
  * Check if a user's response indicates they're okay or wants to stop messaging
+ * Uses LLM to analyze the response for better accuracy
  * @param {string} messageContent - The user's message
  * @returns {Promise<{isOkay: boolean, confidence: number, wantsToStop: boolean}>}
  */
 async function checkIfUserIsOkay(messageContent) {
-  // Check for requests to stop messaging first
-  const stopIndicators = [
-    /stop (messaging|texting|dm|dming|contacting|checking in on)/i,
-    /don'?t (message|text|dm|contact|check in on)/i,
-    /no (more|longer) (messages|texts|dms|check ins)/i,
-    /please stop/i,
-    /leave me alone/i,
-    /i don'?t want (you|this|these) (to|messages|texts|dms)/i,
-  ];
-  
-  const content = messageContent.toLowerCase();
-  const wantsToStop = stopIndicators.some(pattern => pattern.test(content));
-  
-  if (wantsToStop) {
-    return { isOkay: true, confidence: 0.9, wantsToStop: true };
+  try {
+    const openai = require('../openai/openAi');
+    
+    const systemPrompt = `You are analyzing a user's response to a mental health check-in message. Determine:
+1. Is the user indicating they're doing okay/better? (positive response)
+2. Are they still struggling? (negative response)
+3. Do they want to stop receiving check-in messages? (stop request)
+
+Respond ONLY with a JSON object in this exact format:
+{
+  "isOkay": boolean,
+  "confidence": number (0.0-1.0),
+  "wantsToStop": boolean,
+  "reason": "brief explanation"
+}
+
+Examples:
+- "I'm doing well now" → {"isOkay": true, "confidence": 0.9, "wantsToStop": false, "reason": "User indicates they're doing better"}
+- "I'm fine, thanks" → {"isOkay": true, "confidence": 0.85, "wantsToStop": false, "reason": "Positive response"}
+- "Please stop messaging me" → {"isOkay": true, "confidence": 0.95, "wantsToStop": true, "reason": "User requested to stop check-ins"}
+- "I'm still struggling" → {"isOkay": false, "confidence": 0.8, "wantsToStop": false, "reason": "User indicates ongoing difficulties"}
+- "Not really, still having a hard time" → {"isOkay": false, "confidence": 0.75, "wantsToStop": false, "reason": "Negative response indicating continued struggle"}`;
+
+    const userPrompt = `User's response to mental health check-in: "${messageContent}"`;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini', // Use cheaper model for this check
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.2, // Low temperature for consistent analysis
+      max_completion_tokens: 200,
+      response_format: { type: 'json_object' }
+    });
+
+    const result = JSON.parse(response.choices[0].message.content);
+    
+    // Validate response structure
+    if (typeof result.isOkay !== 'boolean' || 
+        typeof result.confidence !== 'number' || 
+        typeof result.wantsToStop !== 'boolean' ||
+        typeof result.reason !== 'string') {
+      console.warn('[MentalHealth] Invalid LLM response format, defaulting to safe response');
+      return { isOkay: true, confidence: 0.6, wantsToStop: false };
+    }
+
+    console.log(`[MentalHealth] LLM analysis: isOkay=${result.isOkay}, confidence=${result.confidence}, wantsToStop=${result.wantsToStop}, reason="${result.reason}"`);
+    
+    return {
+      isOkay: result.isOkay,
+      confidence: result.confidence,
+      wantsToStop: result.wantsToStop
+    };
+  } catch (error) {
+    console.error('[MentalHealth] Error analyzing user response with LLM:', error);
+    // Fallback to basic check if LLM fails
+    const content = messageContent.toLowerCase();
+    
+    // Quick check for stop requests
+    if (/stop (messaging|texting|dm|dming|contacting|checking in)/i.test(content) ||
+        /don'?t (message|text|dm|contact|check in)/i.test(content) ||
+        /leave me alone/i.test(content)) {
+      return { isOkay: true, confidence: 0.9, wantsToStop: true };
+    }
+    
+    // Fallback: if they responded, assume somewhat positive
+    console.log('[MentalHealth] LLM check failed, using fallback (assuming okay)');
+    return { isOkay: true, confidence: 0.6, wantsToStop: false };
   }
-  
-  // Simple heuristic check - if they respond positively, they're likely okay
-  const positiveIndicators = [
-    /i['']?m (ok|fine|good|alright|better)/i,
-    /i feel (ok|fine|good|better|alright)/i,
-    /doing (ok|fine|good|better|alright)/i,
-    /thanks|thank you/i,
-    /i appreciate/i,
-    /yes|yeah|yep/i,
-  ];
-  
-  const negativeIndicators = [
-    /i['']?m (not ok|not fine|not good|bad|worse)/i,
-    /i feel (not ok|not fine|not good|bad|worse)/i,
-    /still (struggling|hurting|sad|depressed)/i,
-    /no|nope|nah/i,
-  ];
-  
-  // Check for positive indicators
-  const hasPositive = positiveIndicators.some(pattern => pattern.test(content));
-  const hasNegative = negativeIndicators.some(pattern => pattern.test(content));
-  
-  if (hasPositive && !hasNegative) {
-    return { isOkay: true, confidence: 0.8, wantsToStop: false };
-  } else if (hasNegative) {
-    return { isOkay: false, confidence: 0.7, wantsToStop: false };
-  }
-  
-  // If they responded at all, that's somewhat positive
-  return { isOkay: true, confidence: 0.6, wantsToStop: false };
 }
 
 /**

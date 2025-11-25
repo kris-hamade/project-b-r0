@@ -129,7 +129,14 @@ async function handleMessage(message) {
           return; // Don't process as a normal message
         } else if (isOkay && confidence >= 0.6) {
           // User seems okay, clear the flag
-          await clearMentalHealthCheckInFlag(username);
+          console.log(`[MentalHealth] User ${username} indicated they're okay (confidence: ${confidence}), clearing flag...`);
+          const cleared = await clearMentalHealthCheckInFlag(username);
+          
+          if (cleared) {
+            console.log(`[MentalHealth] Successfully cleared check-in flag for ${username}`);
+          } else {
+            console.warn(`[MentalHealth] Failed to clear check-in flag for ${username} - flag may not have existed`);
+          }
           
           // Send a brief acknowledgment
           const Personas = require("../models/personas");
