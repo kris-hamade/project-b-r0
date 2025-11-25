@@ -185,20 +185,8 @@ async function generateResponse(
 
     let message = response.choices[0].message.content;
     
-    // Handle citations if web search was used
-    if (enableWebSearch && response.choices[0].message.annotations) {
-      const urlCitations = response.choices[0].message.annotations
-        .filter(a => a.type === 'url_citation')
-        .map(a => a.url_citation);
-      
-      // Add citations to the end of the message for Discord display
-      if (urlCitations.length > 0) {
-        const citationText = '\n\n**Sources:**\n' + urlCitations.map((cite, idx) => 
-          `${idx + 1}. [${cite.title}](${cite.url})`
-        ).join('\n');
-        message += citationText;
-      }
-    }
+    // Note: Citations are already included inline in the message content by OpenAI
+    // No need to add them again at the end
     
     // Log the number of tokens used
     console.log("Prompt tokens used:", response.usage.prompt_tokens);
