@@ -168,12 +168,12 @@ function initializeCheckInScheduler(client) {
           
           // Only check if current hour matches the check-in hour
           if (now.hour() === checkInTime.hour()) {
-            const { shouldCheckIn, reason } = await shouldCheckIn(config.channelId, client);
-            if (shouldCheckIn) {
-              console.log(`[CheckIn] Triggering check-in for channel ${config.channelId}: ${reason}`);
+            const checkInResult = await shouldCheckIn(config.channelId, client);
+            if (checkInResult.shouldCheckIn) {
+              console.log(`[CheckIn] Triggering check-in for channel ${config.channelId}: ${checkInResult.reason}`);
               await sendCheckIn(config.channelId, client);
             } else {
-              console.log(`[CheckIn] Skipping check-in for channel ${config.channelId}: ${reason}`);
+              console.log(`[CheckIn] Skipping check-in for channel ${config.channelId}: ${checkInResult.reason}`);
             }
           }
         } catch (error) {
