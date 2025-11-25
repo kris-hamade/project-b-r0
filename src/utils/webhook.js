@@ -107,7 +107,7 @@ async function pingChannels(matchingChannelIds, message) {
                 console.error(`Channel with ID ${channelId} does not exist.`);
                 continue;
             }
-            await channel.send(message);
+            await channel.send({ content: message, flags: require('discord.js').MessageFlags.SuppressEmbeds });
             console.log(`Sent a ping in channel ${channelId}: ${message}`);
         } catch (error) {
             console.error(`Error pinging everyone in channel ${channelId}: ${error}`);

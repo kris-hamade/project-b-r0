@@ -1,5 +1,6 @@
 const moment = require('moment-timezone');
 const schedule = require('node-schedule');
+const Discord = require('discord.js');
 const ChannelCheckIn = require('../models/channelCheckIn');
 const { generateResponse } = require('../openai/gpt');
 const Personas = require('../models/personas');
@@ -134,7 +135,7 @@ async function sendCheckIn(channelId, client) {
       recentMessages.slice(-5) // Recent context
     );
 
-    await channel.send(checkInMessage);
+    await channel.send({ content: checkInMessage, flags: Discord.MessageFlags.SuppressEmbeds });
     
     // Update last check-in time
     config.lastCheckIn = new Date();

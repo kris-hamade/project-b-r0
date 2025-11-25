@@ -53,7 +53,7 @@ async function pingEveryone(channelId, messageContent, eventTime, frequency, cli
         const humanReadableFrequency = frequency ? cronstrue.toString(frequency) : null;
         const fullMessage = `@everyone ${messageContent} (Time Remaining: ${timeRemaining}${humanReadableFrequency ? `, Frequency: ${humanReadableFrequency}` : ''})`;
         console.log(`Pinging everyone in channel ${channelId}: ${fullMessage}`);
-        await channel.send(fullMessage);
+        await channel.send({ content: fullMessage, flags: require('discord.js').MessageFlags.SuppressEmbeds });
     } catch (error) {
         console.error(`Error pinging everyone in channel ${channelId}: ${error}`);
     }

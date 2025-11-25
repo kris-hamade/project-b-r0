@@ -132,7 +132,7 @@ Keep it personal and human-like.`;
 
     // Try to send DM
     try {
-      await user.send(checkInMessage);
+      await user.send({ content: checkInMessage, flags: require('discord.js').MessageFlags.SuppressEmbeds });
       console.log(`[MentalHealth] Sent check-in DM to user ${user.username} (${userId})`);
       
       // Update last check-in attempt in all channels for this user

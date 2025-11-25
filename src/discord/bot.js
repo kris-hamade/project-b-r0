@@ -77,6 +77,9 @@ async function handleMessage(message) {
     : message.author.username;
   let username = message.author.username;
   let channelId = message.channel.id;
+  
+  // Check if bot is directly @mentioned (available throughout function)
+  const botMentioned = !(message.channel instanceof Discord.DMChannel) && message.mentions.has(client.user.id);
 
   // Ignore messages from other bots
   if (message.author.bot) return;
@@ -121,7 +124,7 @@ async function handleMessage(message) {
             []
           );
           
-          await message.channel.send(stopMessage);
+          await message.channel.send({ content: stopMessage, flags: Discord.MessageFlags.SuppressEmbeds });
           console.log(`[MentalHealth] Cleared check-in flag for ${username} after request to stop messaging`);
           return; // Don't process as a normal message
         } else if (isOkay && confidence >= 0.6) {
@@ -147,7 +150,7 @@ async function handleMessage(message) {
             []
           );
           
-          await message.channel.send(acknowledgment);
+          await message.channel.send({ content: acknowledgment, flags: Discord.MessageFlags.SuppressEmbeds });
           console.log(`[MentalHealth] Cleared check-in flag for ${username} after positive response`);
           return; // Don't process as a normal message
         } else if (!isOkay) {
@@ -170,7 +173,7 @@ async function handleMessage(message) {
             []
           );
           
-          await message.channel.send(supportMessage);
+          await message.channel.send({ content: supportMessage, flags: Discord.MessageFlags.SuppressEmbeds });
           console.log(`[MentalHealth] User ${username} still needs support, keeping flag active`);
           return; // Don't process as a normal message
         }
@@ -344,7 +347,11 @@ async function handleMessage(message) {
     // Check if we should respond based on classifier
     const confidenceThreshold = getClassifierConfidenceThreshold();
     
-    if (!classification.shouldRespond || classification.confidence < confidenceThreshold) {
+    // If bot is directly @mentioned, always respond (bypass classifier)
+    if (botMentioned) {
+      console.log(`[Bot] Direct @mention detected, bypassing classifier decision and responding`);
+      // Continue to generate response - skip classifier check
+    } else if (!classification.shouldRespond || classification.confidence < confidenceThreshold) {
       console.log(`[Classifier] Skipping response: ${classification.reason} (confidence: ${classification.confidence})`);
       return; // Don't respond - classifier says we shouldn't
     }
@@ -420,7 +427,8 @@ async function handleMessage(message) {
 
   // ============================ Pre-Response Quality Check =============================
   // Double-check with LLM if we should actually respond (quality/timing check)
-  if (classification && shouldUseClassifier) {
+  // Skip quality check if bot is directly @mentioned (always respond to direct mentions)
+  if (classification && shouldUseClassifier && !botMentioned) {
     try {
       const channelName = message.channel instanceof Discord.DMChannel 
         ? 'dm' 
@@ -448,6 +456,8 @@ async function handleMessage(message) {
       // On error, proceed anyway (fail open) since classifier already approved
       console.log('[QualityCheck] Check failed, proceeding based on classifier approval');
     }
+  } else if (botMentioned) {
+    console.log(`[QualityCheck] Skipping quality check: Bot directly @mentioned, always responding`);
   }
   // ============================ End Pre-Response Quality Check =============================
 
@@ -536,10 +546,10 @@ async function handleMessage(message) {
     if (responseText.length > MAX_MESSAGE_LENGTH) {
       let messageChunks = splitIntoChunks(responseText, MAX_MESSAGE_LENGTH);
       for (const chunk of messageChunks) {
-        await message.channel.send(chunk);
+        await message.channel.send({ content: chunk, flags: Discord.MessageFlags.SuppressEmbeds });
       }
     } else {
-      await message.channel.send(responseText);
+      await message.channel.send({ content: responseText, flags: Discord.MessageFlags.SuppressEmbeds });
     }
   } catch (err) {
     console.error(err);
