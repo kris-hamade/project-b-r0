@@ -2,6 +2,7 @@ const { getTokenLimits, getModelTemperatures, getGlobalGptModel } = require("../
 const { getHistory } = require("../discord/historyLog.js");
 const { scheduleEvent } = require("../utils/eventScheduler.js");
 const openai = require('./openAi');
+const moment = require('moment-timezone');
 
 // Set the max tokens to 1/4 of the max prompt size
 //const maxTokens = maxPromptSize / 4;
@@ -39,7 +40,28 @@ async function generateResponse(
   }
 
   try {
+    // Get current date and time for context
+    const currentDate = moment().format('MMMM D, YYYY');
+    const currentDateTime = moment().format('MMMM D, YYYY [at] h:mm A');
+    const currentYear = moment().format('YYYY');
+    
     const messages = [
+      {
+        role: "system",
+        content: `The current date is ${currentDate} (${currentYear}). Today is ${currentDateTime}. Always use this date when answering questions about dates, time, or current events. Do not use the model's training date or any other date.`
+      },
+      {
+        role: "system",
+        content: `IMPORTANT: You are responding in Discord, which does NOT support markdown tables or charts. When presenting data:
+- Use simple text lists with bullet points or numbered lists
+- Use emoji for visual indicators (📊 📈 📉 ✅ ❌ etc.)
+- For comparisons, use simple text format: "Option A: value | Option B: value"
+- For rankings, use numbered lists: "1. First item\n2. Second item"
+- NEVER use markdown table syntax (| col1 | col2 |)
+- NEVER use markdown code blocks for charts or graphs
+- Keep data presentation simple and readable in plain text
+- Use code blocks only for actual code, not for formatting tables`
+      },
       {
         role: "system",
         content: "Make sure your response is as concise as possible"
@@ -77,16 +99,23 @@ async function generateResponse(
     }
 
     // Add recent conversation context if available
+    // Filter out mental health support messages to prevent them from influencing responses
     if (recentMessages && recentMessages.length > 0) {
-      const recentContext = recentMessages
-        .slice(-5) // Use last 5 messages for context (to avoid token bloat)
-        .map((msg, idx) => `[${idx + 1}] ${msg}`)
-        .join('\n');
+      // Only filter very specific mental health support language, not general mentions
+      const mentalHealthSupportPattern = /(i['']m here for you|checking in on you|how are you doing|are you okay|reach out if you need|support.*mental|mental health.*support)/i;
+      const filteredRecentMessages = recentMessages.filter(msg => !mentalHealthSupportPattern.test(msg));
       
-      messages.push({
-        role: "system",
-        content: `--START RECENT CONVERSATION CONTEXT--\n${recentContext}\n--END RECENT CONVERSATION CONTEXT--`,
-      });
+      if (filteredRecentMessages.length > 0) {
+        const recentContext = filteredRecentMessages
+          .slice(-5) // Use last 5 messages for context (to avoid token bloat)
+          .map((msg, idx) => `[${idx + 1}] ${msg}`)
+          .join('\n');
+        
+        messages.push({
+          role: "system",
+          content: `--START RECENT CONVERSATION CONTEXT--\n${recentContext}\n--END RECENT CONVERSATION CONTEXT--`,
+        });
+      }
     }
 
     messages.push(
@@ -107,16 +136,32 @@ async function generateResponse(
     // Use search-enabled model if web search is enabled
     let modelToUse = model;
     if (enableWebSearch) {
-      // Map regular models to their search-enabled variants
-      const searchModelMap = {
-        'gpt-4o': 'gpt-4o-search-preview',
-        'gpt-4o-mini': 'gpt-4o-mini-search-preview',
-        'gpt-5': 'gpt-5-search-api',
-        'gpt-5-chat-latest': 'gpt-5-search-api',
-      };
+      // Check if a specific web search model is configured
+      const configuredSearchModel = process.env.WEB_SEARCH_MODEL;
       
-      modelToUse = searchModelMap[model] || 'gpt-4o-search-preview'; // Default to gpt-4o-search-preview
-      console.log(`[WebSearch] Using search-enabled model: ${modelToUse}`);
+      if (configuredSearchModel) {
+        // Use the configured model
+        modelToUse = configuredSearchModel;
+        console.log(`[WebSearch] Using configured search model: ${modelToUse}`);
+      } else {
+        // Map regular models to their search-enabled variants
+        // Prefer faster models for better response time
+        const searchModelMap = {
+          'gpt-4o': 'gpt-4o-mini-search-preview', // Use mini for faster responses
+          'gpt-4o-mini': 'gpt-4o-mini-search-preview',
+          'gpt-5': 'gpt-4o-mini-search-preview', // Use mini for faster responses
+          'gpt-5-chat-latest': 'gpt-4o-mini-search-preview', // Use mini for faster responses
+        };
+        
+        modelToUse = searchModelMap[model] || 'gpt-4o-mini-search-preview'; // Default to faster mini model
+        console.log(`[WebSearch] Using search-enabled model: ${modelToUse} (auto-mapped from ${model})`);
+      }
+      
+      // Add instruction to be concise and fast when using web search
+      messages.push({
+        role: "system",
+        content: "You are using web search. Provide a concise, direct answer quickly. Focus on the most relevant information. Keep responses brief and to the point."
+      });
     }
 
     // Build web_search_options if enabled
@@ -140,7 +185,7 @@ async function generateResponse(
     const requestParams = {
       model: modelToUse,
       messages: messages,
-      max_completion_tokens: getTokenLimits().chat_input_limit,
+      max_completion_tokens: enableWebSearch ? Math.min(getTokenLimits().chat_input_limit, 1000) : getTokenLimits().chat_input_limit, // Limit tokens for web search to speed up responses
       ...(webSearchOptions && { web_search_options: webSearchOptions }),
     };
     
@@ -150,11 +195,45 @@ async function generateResponse(
     }
     
     let response;
+    const startTime = Date.now();
+    const webSearchTimeout = parseInt(process.env.WEB_SEARCH_TIMEOUT, 10) || 30000; // 30 seconds default
+    
     try {
-      response = await openai.chat.completions.create(requestParams);
+      // Create a timeout promise for web search
+      if (enableWebSearch) {
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Web search timeout')), webSearchTimeout);
+        });
+        
+        const apiPromise = openai.chat.completions.create(requestParams);
+        
+        response = await Promise.race([apiPromise, timeoutPromise]);
+      } else {
+        response = await openai.chat.completions.create(requestParams);
+      }
+      
+      const elapsedTime = Date.now() - startTime;
+      if (enableWebSearch) {
+        console.log(`[WebSearch] Response generated in ${elapsedTime}ms`);
+      }
     } catch (error) {
-      // If web search fails (500 error, model not available, etc.), fallback to regular model
-      if (enableWebSearch && (error.status === 500 || error.status === 404 || error.type === 'server_error' || error.type === 'invalid_request_error')) {
+      const elapsedTime = Date.now() - startTime;
+      
+      // Handle timeout specifically
+      if (enableWebSearch && (error.message === 'Web search timeout' || elapsedTime >= webSearchTimeout)) {
+        console.warn(`[WebSearch] Request timed out after ${elapsedTime}ms, falling back to regular model: ${model}`);
+        
+        // Fallback to regular model without web search
+        const fallbackParams = {
+          model: model,
+          messages: messages,
+          max_completion_tokens: getTokenLimits().chat_input_limit,
+          temperature: temperature,
+        };
+        
+        response = await openai.chat.completions.create(fallbackParams);
+        console.log('[WebSearch] Successfully used fallback model without web search after timeout');
+      } else if (enableWebSearch && (error.status === 500 || error.status === 404 || error.type === 'server_error' || error.type === 'invalid_request_error')) {
         console.warn(`[WebSearch] Search-enabled model failed (${error.status || error.type}), falling back to regular model: ${model}`);
         console.warn(`[WebSearch] Error details: ${error.message}`);
         
@@ -255,12 +334,18 @@ async function shouldRespondCheck(messageContent, classification, recentMessages
   // Use a cheaper/faster model for this check, or use the provided model
   const checkModel = model || 'gpt-4o-mini'; // Use a cheaper model for this quick check
   
+  // Get current date and time for context
+  const currentDate = moment().format('MMMM D, YYYY');
+  const currentYear = moment().format('YYYY');
+  
   // Build context about recent messages
   const recentContext = recentMessages.length > 0 
     ? `Recent messages in channel: ${recentMessages.slice(-3).join(' | ')}`
     : 'No recent messages';
 
-  const systemPrompt = `You are a quality control assistant for a Discord bot. Your job is to determine if the bot should respond to a message.
+  const systemPrompt = `The current date is ${currentDate} (${currentYear}). Always use this date when evaluating questions about dates, time, or current events.
+
+You are a quality control assistant for a Discord bot. Your job is to determine if the bot should respond to a message.
 
 Consider:
 1. Would a response be helpful, accurate, and valuable?
@@ -319,8 +404,28 @@ Should the bot respond? Consider if the response would be quality, accurate, hel
 
 async function generateImageResponse(prompt, persona, model, temperature, imageDescription) {
   const formattedDescription = formatImageDescription(imageDescription);
+  
+  // Get current date and time for context
+  const currentDate = moment().format('MMMM D, YYYY');
+  const currentDateTime = moment().format('MMMM D, YYYY [at] h:mm A');
+  const currentYear = moment().format('YYYY');
 
   let messages = [
+    {
+      role: "system",
+      content: `The current date is ${currentDate} (${currentYear}). Today is ${currentDateTime}. Always use this date when answering questions about dates, time, or current events.`
+    },
+    {
+      role: "system",
+      content: `IMPORTANT: You are responding in Discord, which does NOT support markdown tables or charts. When presenting data:
+- Use simple text lists with bullet points or numbered lists
+- Use emoji for visual indicators (📊 📈 📉 ✅ ❌ etc.)
+- For comparisons, use simple text format: "Option A: value | Option B: value"
+- For rankings, use numbered lists: "1. First item\n2. Second item"
+- NEVER use markdown table syntax (| col1 | col2 |)
+- NEVER use markdown code blocks for charts or graphs
+- Keep data presentation simple and readable in plain text`
+    },
     {
       role: "system",
       content: await personaBuilder(persona),
@@ -391,6 +496,12 @@ async function generateEventData(prompt, channelId, client) {
   try {
     console.log(`Generating event data with prompt: ${prompt}`);
 
+    // Get current date and time for context
+    const currentDate = moment().format('MMMM D, YYYY');
+    const currentDateTime = moment().format('MMMM D, YYYY [at] h:mm A');
+    const currentYear = moment().format('YYYY');
+    const currentDateISO = moment().format('YYYY-MM-DD');
+
     const exampleJson = {
       "Event Name": "Sample Event",
       "Date": "YYYY-MM-DD",
@@ -402,6 +513,10 @@ async function generateEventData(prompt, channelId, client) {
     const response = await openai.chat.completions.create({
       model: getGlobalGptModel(),
       messages: [
+        {
+          role: "system",
+          content: `The current date is ${currentDate} (${currentYear}). Today is ${currentDateTime} (ISO: ${currentDateISO}). Always use the current date as a reference when scheduling events. If the user mentions "today", "tomorrow", "next week", etc., calculate based on the current date: ${currentDateISO}.`
+        },
         {
           role: "system",
           content:

@@ -56,6 +56,31 @@ function getClassifierConfidenceThreshold() {
     return threshold;
 }
 
+function getClassifierApiUrl() {
+    // If full URL is provided, use it
+    if (process.env.CLASSIFIER_API_URL) {
+        return process.env.CLASSIFIER_API_URL;
+    }
+    
+    // Otherwise, construct from host and port
+    const host = process.env.CLASSIFIER_API_HOST || 'localhost';
+    const port = process.env.CLASSIFIER_API_PORT || '8000';
+    const protocol = process.env.CLASSIFIER_API_PROTOCOL || 'http';
+    
+    return `${protocol}://${host}:${port}`;
+}
+
+function getClassifierTimeout() {
+    // Convert CLASSIFIER_TIMEOUT to an integer or default to 5000ms
+    let timeout = parseInt(process.env.CLASSIFIER_TIMEOUT, 10) || 5000;
+    return timeout;
+}
+
+function getWebSearchModel() {
+    // Get the configured web search model, or return null to use auto-mapping
+    return process.env.WEB_SEARCH_MODEL || null;
+}
+
 function getVersion() {
     let version = process.env.VERSION || "0.0.0";
     // Sets the version of the bot
@@ -84,5 +109,8 @@ module.exports = {
     getTokenLimits,
     getUptime,
     getUserAllowedModels,
-    getClassifierConfidenceThreshold
+    getClassifierConfidenceThreshold,
+    getClassifierApiUrl,
+    getClassifierTimeout,
+    getWebSearchModel
 };

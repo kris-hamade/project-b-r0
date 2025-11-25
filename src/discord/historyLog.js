@@ -40,15 +40,23 @@ async function getHistory(nickname, personality, channelId, numberOfEntries = 5)
         { requestor: nickname, username: nickname, channelId: channelId },
         { type: "assistant", username: personality, channelId: channelId }
       ]
-    }).sort({ _id: -1 }).limit(numberOfEntries);
+    }).sort({ _id: -1 }).limit(numberOfEntries * 2); // Fetch more to account for potential filtering
 
     // Since the documents are fetched in reverse order, reverse them to get the correct chronological order
     const reversedHistoryDocs = historyDocs.reverse();
+    
+    // Filter out mental health-related messages to prevent them from influencing future conversations
+    // Only filter if the message contains very specific mental health support language
+    const mentalHealthPattern = /(i['']m here for you|checking in on you|how are you doing|are you okay|reach out if you need|support.*mental|mental health.*support)/i;
+    const filteredDocs = reversedHistoryDocs.filter(doc => {
+      // Keep messages that don't match mental health support patterns
+      return !mentalHealthPattern.test(doc.content);
+    }).slice(0, numberOfEntries); // Take only the requested number after filtering
 
-    console.log("Last entries of chat history fetched:", reversedHistoryDocs);
+    console.log(`Last entries of chat history fetched: ${filteredDocs.length} (filtered from ${historyDocs.length})`);
 
     // Format and return the chat history
-    const formattedHistory = formatChatHistory(reversedHistoryDocs);
+    const formattedHistory = formatChatHistory(filteredDocs);
     console.log("Formatted chat history:", formattedHistory);
     return formattedHistory;
   } catch (error) {

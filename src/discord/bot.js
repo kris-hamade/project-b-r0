@@ -35,6 +35,15 @@ const { initEntropyEngine, createDiceRng } = require("../utils/entropyEngine");
 const { classifyMessage } = require("../services/classifierClient");
 const { buildSystemPrompt, buildUserPrompt } = require("../prompting/promptBuilder");
 const { getClassifierConfidenceThreshold } = require("../utils/config");
+const ChannelCheckIn = require("../models/channelCheckIn");
+const { initializeCheckInScheduler } = require("../utils/channelCheckIn");
+const ChannelResponseMode = require("../models/channelResponseMode");
+const { 
+  setMentalHealthCheckInFlag, 
+  clearMentalHealthCheckInFlag, 
+  checkIfUserIsOkay,
+  initializeMentalHealthCheckInScheduler 
+} = require("../utils/mentalHealthCheckIn");
 
 // Include the required packages for slash commands
 const { REST } = require("@discordjs/rest");
@@ -71,6 +80,108 @@ async function handleMessage(message) {
 
   // Ignore messages from other bots
   if (message.author.bot) return;
+
+  // ============================ Mental Health DM Check-In Response =============================
+  // Handle DM responses for mental health check-ins
+  if (message.channel instanceof Discord.DMChannel) {
+    try {
+      const username = message.author.username;
+      const ChatConfig = require("../models/chatConfig");
+      // Check for mental health flag in any channel config for this user
+      const config = await ChatConfig.findOne({ 
+        username, 
+        needsMentalHealthCheckIn: true 
+      });
+      
+      if (config) {
+        // User has a check-in flag set, check if they're responding to our check-in
+        const { checkIfUserIsOkay } = require("../utils/mentalHealthCheckIn");
+        const { isOkay, confidence, wantsToStop } = await checkIfUserIsOkay(message.content);
+        
+        if (wantsToStop) {
+          // User wants to stop receiving check-in messages
+          await clearMentalHealthCheckInFlag(username);
+          
+          // Send acknowledgment that respects their request
+          const Personas = require("../models/personas");
+          const { generateResponse } = require("../openai/gpt");
+          const persona = await Personas.findOne({ name: 'assistant' }) || await Personas.findOne({});
+          
+          const stopMessage = await generateResponse(
+            "The user has asked you to stop messaging them. Generate a brief, respectful acknowledgment (1-2 sentences) that you understand and will stop, but that you're here if they need to talk in the future. Be respectful and not pushy.",
+            persona,
+            'No DnD Data Found',
+            username,
+            persona.name,
+            'gpt-4o-mini',
+            0.7,
+            null,
+            `dm_${message.author.id}`,
+            null,
+            []
+          );
+          
+          await message.channel.send(stopMessage);
+          console.log(`[MentalHealth] Cleared check-in flag for ${username} after request to stop messaging`);
+          return; // Don't process as a normal message
+        } else if (isOkay && confidence >= 0.6) {
+          // User seems okay, clear the flag
+          await clearMentalHealthCheckInFlag(username);
+          
+          // Send a brief acknowledgment
+          const Personas = require("../models/personas");
+          const { generateResponse } = require("../openai/gpt");
+          const persona = await Personas.findOne({ name: 'assistant' }) || await Personas.findOne({});
+          
+          const acknowledgment = await generateResponse(
+            "The user has indicated they're okay. Generate a brief, warm acknowledgment (1-2 sentences) that you're glad to hear they're doing better, and that you're here if they need to talk.",
+            persona,
+            'No DnD Data Found',
+            username,
+            persona.name,
+            'gpt-4o-mini',
+            0.7,
+            null,
+            `dm_${message.author.id}`,
+            null,
+            []
+          );
+          
+          await message.channel.send(acknowledgment);
+          console.log(`[MentalHealth] Cleared check-in flag for ${username} after positive response`);
+          return; // Don't process as a normal message
+        } else if (!isOkay) {
+          // User still seems to be struggling, keep the flag but acknowledge
+          const Personas = require("../models/personas");
+          const { generateResponse } = require("../openai/gpt");
+          const persona = await Personas.findOne({ name: 'assistant' }) || await Personas.findOne({});
+          
+          const supportMessage = await generateResponse(
+            "The user is still struggling. Generate a supportive, empathetic message (2-3 sentences) that acknowledges their feelings, offers support, and encourages them to reach out to real-world resources if needed. Be warm and caring.",
+            persona,
+            'No DnD Data Found',
+            username,
+            persona.name,
+            'gpt-4o-mini',
+            0.7,
+            null,
+            `dm_${message.author.id}`,
+            null,
+            []
+          );
+          
+          await message.channel.send(supportMessage);
+          console.log(`[MentalHealth] User ${username} still needs support, keeping flag active`);
+          return; // Don't process as a normal message
+        }
+        // If confidence is low, treat as normal message but keep flag
+      }
+    } catch (error) {
+      console.error('[MentalHealth] Error handling DM check-in response:', error);
+      // Continue with normal message processing if check-in handling fails
+    }
+  }
+  // ============================ End Mental Health DM Check-In Response =============================
 
   // Check for "don't have a cow"
   const regexCow = /\b(?:don'?t|do\s+not)\s+have\s+a\s+cow[\s'!,?]*\b/i;
@@ -112,6 +223,30 @@ async function handleMessage(message) {
     }
   }
 
+  // Check channel response mode setting (respond without mention)
+  // This is checked BEFORE classifier to respect the channel setting
+  if (!(message.channel instanceof Discord.DMChannel)) {
+    try {
+      const responseMode = await ChannelResponseMode.findOne({ channelId: message.channel.id });
+      const respondWithoutMention = responseMode?.respondWithoutMention ?? false; // Default to false (off)
+      
+      // If respondWithoutMention is false (default), require @mention
+      if (!respondWithoutMention && !message.mentions.has(client.user.id)) {
+        console.log(`[ResponseMode] Skipping response: Bot not mentioned and respondWithoutMention is disabled for this channel`);
+        return;
+      }
+      
+      console.log(`[ResponseMode] Channel setting: respondWithoutMention=${respondWithoutMention}, botMentioned=${message.mentions.has(client.user.id)}`);
+    } catch (error) {
+      console.error('[ResponseMode] Error checking channel response mode:', error);
+      // On error, default to requiring mention (fail closed)
+      if (!message.mentions.has(client.user.id)) {
+        console.log('[ResponseMode] Error occurred, defaulting to require mention');
+        return;
+      }
+    }
+  }
+
   // ============================ Classifier Integration =============================
   // Get recent messages for classifier context (last 5-10 messages from Discord API)
   let recentMessages = [];
@@ -150,6 +285,61 @@ async function handleMessage(message) {
       sensitivity: classification.sensitivity,
       reason: classification.reason,
     });
+
+    // ============================ Mental Health Check-In Detection =============================
+    // If high sensitivity detected, set mental health check-in flag and send immediate DM
+    // Also clear recentMessages to prevent high-sensitivity context from contaminating future responses
+    if (classification.sensitivity === "high") {
+      try {
+        const username = message.author.username;
+        const userId = message.author.id;
+        const channelId = message.channel.id;
+        
+        // Check if we already have a flag set and sent a recent DM
+        const ChatConfig = require("../models/chatConfig");
+        const existingConfig = await ChatConfig.findOne({ 
+          username, 
+          channelID: channelId,
+          needsMentalHealthCheckIn: true 
+        });
+        
+        // Only send immediate DM if we haven't sent one recently (within last hour)
+        let shouldSendImmediateDM = true;
+        if (existingConfig && existingConfig.lastCheckInAttempt) {
+          const hoursSinceLastAttempt = moment().diff(moment(existingConfig.lastCheckInAttempt), 'hours');
+          if (hoursSinceLastAttempt < 1) {
+            shouldSendImmediateDM = false;
+            console.log(`[MentalHealth] Skipping immediate DM for ${username}: Sent ${hoursSinceLastAttempt} hours ago`);
+          }
+        }
+        
+        // Set the flag in the actual channel config
+        await setMentalHealthCheckInFlag(username, userId, channelId);
+        console.log(`[MentalHealth] High sensitivity detected for ${username}, check-in flag set`);
+        
+        // Clear recentMessages to prevent high-sensitivity messages from influencing future responses
+        // This ensures the bot responds to the current message without mental health context bleeding into normal conversation
+        const originalRecentCount = recentMessages.length;
+        recentMessages = []; // Clear recent messages to prevent contamination
+        console.log(`[MentalHealth] Cleared ${originalRecentCount} recent messages from context to prevent mental health topic persistence`);
+        
+        // Send immediate DM check-in only if we haven't sent one recently
+        if (shouldSendImmediateDM) {
+          try {
+            const { sendMentalHealthCheckInDM } = require("../utils/mentalHealthCheckIn");
+            await sendMentalHealthCheckInDM(userId, client);
+            console.log(`[MentalHealth] Immediate check-in DM sent to ${username}`);
+          } catch (dmError) {
+            console.error('[MentalHealth] Error sending immediate DM:', dmError);
+            // Don't block the response if DM fails
+          }
+        }
+      } catch (error) {
+        console.error('[MentalHealth] Error setting check-in flag:', error);
+        // Don't block the response if this fails
+      }
+    }
+    // ============================ End Mental Health Check-In Detection =============================
 
     // Check if we should respond based on classifier
     const confidenceThreshold = getClassifierConfidenceThreshold();
@@ -315,23 +505,32 @@ async function handleMessage(message) {
       ""
     );
 
-    // Build History for Storage and Retrieval
-    buildHistory(
-      "user",
-      nickname,
-      message.content,
-      nickname,
-      channelId,
-      imgUrl
-    );
-    buildHistory(
-      "assistant",
-      currentPersonality.name,
-      responseText,
-      nickname,
-      channelId,
-      imgUrl
-    );
+    // Check if this is a high-sensitivity mental health response
+    // If so, don't save to history to prevent it from influencing future conversations
+    const isMentalHealthResponse = classification && classification.sensitivity === "high";
+    
+    // Build History for Storage and Retrieval (skip for mental health responses in channels)
+    // Mental health conversations should only happen in DMs, not in channel history
+    if (!isMentalHealthResponse || message.channel instanceof Discord.DMChannel) {
+      buildHistory(
+        "user",
+        nickname,
+        message.content,
+        nickname,
+        channelId,
+        imgUrl
+      );
+      buildHistory(
+        "assistant",
+        currentPersonality.name,
+        responseText,
+        nickname,
+        channelId,
+        imgUrl
+      );
+    } else {
+      console.log(`[MentalHealth] Skipping history save for high-sensitivity response in channel ${channelId} to prevent future mental health references`);
+    }
 
     const MAX_MESSAGE_LENGTH = 2000;
     if (responseText.length > MAX_MESSAGE_LENGTH) {
@@ -560,6 +759,68 @@ const commands = [
     ],
   },
   {
+    name: "checkin",
+    description: "Configure automatic check-in messages for inactive channels",
+    options: [
+      {
+        name: "enable",
+        description: "Enable check-ins for this channel",
+        type: 1, // SUB_COMMAND
+        options: [
+          {
+            name: "inactivity_days",
+            type: 4, // INTEGER
+            description: "Days of inactivity before check-in (default: 1)",
+            required: false,
+          },
+          {
+            name: "check_in_time",
+            type: 3, // STRING
+            description: "Time to check (HH:mm format, default: 14:00)",
+            required: false,
+          },
+          {
+            name: "timezone",
+            type: 3, // STRING
+            description: "IANA timezone (default: America/New_York)",
+            required: false,
+          },
+        ],
+      },
+      {
+        name: "disable",
+        description: "Disable check-ins for this channel",
+        type: 1, // SUB_COMMAND
+      },
+      {
+        name: "status",
+        description: "View check-in configuration for this channel",
+        type: 1, // SUB_COMMAND
+      },
+    ],
+  },
+  {
+    name: "responsemode",
+    description: "Control whether the bot responds without being @mentioned",
+    options: [
+      {
+        name: "enable",
+        description: "Enable responding without @mention (bot will respond based on classifier)",
+        type: 1, // SUB_COMMAND
+      },
+      {
+        name: "disable",
+        description: "Disable responding without @mention (bot only responds when @mentioned)",
+        type: 1, // SUB_COMMAND
+      },
+      {
+        name: "status",
+        description: "View current response mode for this channel",
+        type: 1, // SUB_COMMAND
+      },
+    ],
+  },
+  {
     name: "webhook",
     description: "Subscribe to or unsubscribe from a webhook for the channel",
     options: [
@@ -676,6 +937,14 @@ function start() {
       .find((cmd) => cmd.name === "webhook")
       .options.find((opt) => opt.name === "subscribe").options[0];
     subscribeWebhookSubCommand.choices = webhookChoices;
+
+    // Initialize check-in scheduler
+    initializeCheckInScheduler(client);
+    console.log('[CheckIn] Check-in scheduler initialized');
+
+    // Initialize mental health check-in scheduler
+    initializeMentalHealthCheckInScheduler(client);
+    console.log('[MentalHealth] Mental health check-in scheduler initialized');
 
     // Add these choices to the 'unsubscribe' subcommand
     const unsubscribeWebhookSubCommand = commands
@@ -1136,6 +1405,147 @@ function start() {
             }
           }
           loadWebhookSubs();
+          break;
+        }
+
+        case "checkin": {
+          const subCommand = interaction.options.getSubcommand();
+          const channelId = interaction.channelId;
+
+          if (subCommand === "enable") {
+            try {
+              const inactivityDays = interaction.options.getInteger("inactivity_days") || 1;
+              const checkInTime = interaction.options.getString("check_in_time") || "14:00";
+              const timezone = interaction.options.getString("timezone") || "America/New_York";
+
+              // Validate time format
+              if (!/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(checkInTime)) {
+                await interaction.reply("Invalid time format. Please use HH:mm format (e.g., 14:00).");
+                return;
+              }
+
+              // Update or create check-in config
+              const config = await ChannelCheckIn.findOneAndUpdate(
+                { channelId },
+                {
+                  enabled: true,
+                  inactivityDays,
+                  checkInTime,
+                  timezone,
+                },
+                { upsert: true, new: true }
+              );
+
+              await interaction.reply(
+                `✅ Check-ins enabled for this channel!\n` +
+                `- Inactivity threshold: ${inactivityDays} day(s)\n` +
+                `- Check-in time: ${checkInTime}\n` +
+                `- Timezone: ${timezone}\n` +
+                `The bot will check in if the channel was active in the past ${inactivityDays} day(s) but quiet today.`
+              );
+            } catch (error) {
+              console.error(`[CheckIn] Error enabling check-in:`, error);
+              await interaction.reply("An error occurred while enabling check-ins.");
+            }
+          } else if (subCommand === "disable") {
+            try {
+              const config = await ChannelCheckIn.findOneAndUpdate(
+                { channelId },
+                { enabled: false },
+                { new: true }
+              );
+
+              if (config) {
+                await interaction.reply("✅ Check-ins disabled for this channel.");
+              } else {
+                await interaction.reply("Check-ins were not enabled for this channel.");
+              }
+            } catch (error) {
+              console.error(`[CheckIn] Error disabling check-in:`, error);
+              await interaction.reply("An error occurred while disabling check-ins.");
+            }
+          } else if (subCommand === "status") {
+            try {
+              const config = await ChannelCheckIn.findOne({ channelId });
+
+              if (!config || !config.enabled) {
+                await interaction.reply("Check-ins are not enabled for this channel.");
+              } else {
+                const statusMessage = 
+                  `**Check-in Configuration:**\n` +
+                  `- Status: ${config.enabled ? '✅ Enabled' : '❌ Disabled'}\n` +
+                  `- Inactivity threshold: ${config.inactivityDays} day(s)\n` +
+                  `- Check-in time: ${config.checkInTime}\n` +
+                  `- Timezone: ${config.timezone}\n` +
+                  `- Minimum messages per day: ${config.minMessagesPerDay || 5}\n` +
+                  (config.lastCheckIn 
+                    ? `- Last check-in: ${moment(config.lastCheckIn).format('YYYY-MM-DD HH:mm:ss')}\n`
+                    : `- Last check-in: Never\n`);
+
+                await interaction.reply(statusMessage);
+              }
+            } catch (error) {
+              console.error(`[CheckIn] Error getting status:`, error);
+              await interaction.reply("An error occurred while getting check-in status.");
+            }
+          }
+          break;
+        }
+
+        case "responsemode": {
+          const subCommand = interaction.options.getSubcommand();
+          const channelId = interaction.channelId;
+
+          if (subCommand === "enable") {
+            try {
+              const responseMode = await ChannelResponseMode.findOneAndUpdate(
+                { channelId },
+                { respondWithoutMention: true },
+                { upsert: true, new: true }
+              );
+
+              await interaction.reply(
+                `✅ Response mode enabled!\n` +
+                `The bot will now respond to messages in this channel without being @mentioned, based on the classifier's decision.`
+              );
+            } catch (error) {
+              console.error(`[ResponseMode] Error enabling response mode:`, error);
+              await interaction.reply("An error occurred while enabling response mode.");
+            }
+          } else if (subCommand === "disable") {
+            try {
+              const responseMode = await ChannelResponseMode.findOneAndUpdate(
+                { channelId },
+                { respondWithoutMention: false },
+                { upsert: true, new: true }
+              );
+
+              await interaction.reply(
+                `✅ Response mode disabled!\n` +
+                `The bot will now only respond when @mentioned in this channel.`
+              );
+            } catch (error) {
+              console.error(`[ResponseMode] Error disabling response mode:`, error);
+              await interaction.reply("An error occurred while disabling response mode.");
+            }
+          } else if (subCommand === "status") {
+            try {
+              const responseMode = await ChannelResponseMode.findOne({ channelId });
+              const respondWithoutMention = responseMode?.respondWithoutMention ?? false;
+
+              const statusMessage = 
+                `**Response Mode Configuration:**\n` +
+                `- Respond without @mention: ${respondWithoutMention ? '✅ Enabled' : '❌ Disabled (default)'}\n` +
+                (respondWithoutMention 
+                  ? `The bot will respond based on the classifier's decision.\n`
+                  : `The bot will only respond when @mentioned.\n`);
+
+              await interaction.reply(statusMessage);
+            } catch (error) {
+              console.error(`[ResponseMode] Error getting status:`, error);
+              await interaction.reply("An error occurred while getting response mode status.");
+            }
+          }
           break;
         }
 

@@ -7,8 +7,33 @@ const fetch = globalThis.fetch;
  * The classifier is a separate HTTP service that uses heuristics to classify messages
  */
 
-const CLASSIFIER_API_URL = process.env.CLASSIFIER_API_URL || 'http://localhost:8000';
+/**
+ * Get the classifier API base URL from environment variables
+ * Supports two configuration methods:
+ * 1. CLASSIFIER_API_URL - Full URL (e.g., "http://localhost:8000")
+ * 2. CLASSIFIER_API_HOST + CLASSIFIER_API_PORT - Separate host and port
+ * 
+ * Priority: CLASSIFIER_API_URL takes precedence if set
+ */
+function getClassifierApiUrl() {
+  // If full URL is provided, use it
+  if (process.env.CLASSIFIER_API_URL) {
+    return process.env.CLASSIFIER_API_URL;
+  }
+  
+  // Otherwise, construct from host and port
+  const host = process.env.CLASSIFIER_API_HOST || 'localhost';
+  const port = process.env.CLASSIFIER_API_PORT || '8000';
+  const protocol = process.env.CLASSIFIER_API_PROTOCOL || 'http';
+  
+  return `${protocol}://${host}:${port}`;
+}
+
+const CLASSIFIER_API_URL = getClassifierApiUrl();
 const CLASSIFIER_TIMEOUT = parseInt(process.env.CLASSIFIER_TIMEOUT, 10) || 5000; // 5 seconds default
+
+// Log the configured URL on module load (for debugging)
+console.log(`[ClassifierClient] Configured classifier API URL: ${CLASSIFIER_API_URL}`);
 
 /**
  * Classify a message using the classifier API
