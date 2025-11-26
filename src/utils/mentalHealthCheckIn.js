@@ -3,6 +3,24 @@ const schedule = require('node-schedule');
 const ChatConfig = require('../models/chatConfig');
 const { generateResponse } = require('../openai/gpt');
 const Personas = require('../models/personas');
+const UserMentalHealthSettings = require('../models/userMentalHealthSettings');
+
+/**
+ * Check if a user has mental health check-ins enabled
+ * @param {string} userId - Discord user ID
+ * @returns {Promise<boolean>} - True if enabled, false otherwise (defaults to false/off)
+ */
+async function isUserMentalHealthCheckInsEnabled(userId) {
+  try {
+    const settings = await UserMentalHealthSettings.findOne({ userId });
+    // Default to false (off) if no settings found
+    return settings?.mentalHealthCheckInsEnabled ?? false;
+  } catch (error) {
+    console.error(`[MentalHealth] Error checking settings for user ${userId}:`, error);
+    // Default to false (off) on error
+    return false;
+  }
+}
 
 /**
  * Set the mental health check-in flag for a user in their actual channel config
@@ -262,6 +280,19 @@ function initializeMentalHealthCheckInScheduler(client) {
       
       for (const [username, config] of usersByUsername) {
         try {
+          // Check if we have a userId stored
+          if (!config.userId) {
+            console.log(`[MentalHealth] Skipping ${username}: No userId stored`);
+            continue;
+          }
+          
+          // Check if user has mental health check-ins enabled (default is off)
+          const userHasCheckInsEnabled = await isUserMentalHealthCheckInsEnabled(config.userId);
+          if (!userHasCheckInsEnabled) {
+            console.log(`[MentalHealth] Skipping ${username}: Mental health check-ins are disabled for this user`);
+            continue;
+          }
+          
           // Check if we've attempted a check-in recently (within last 12 hours)
           if (config.lastCheckInAttempt) {
             const hoursSinceLastAttempt = moment().diff(moment(config.lastCheckInAttempt), 'hours');
@@ -269,12 +300,6 @@ function initializeMentalHealthCheckInScheduler(client) {
               console.log(`[MentalHealth] Skipping ${username}: Checked in ${hoursSinceLastAttempt} hours ago`);
               continue;
             }
-          }
-          
-          // Check if we have a userId stored
-          if (!config.userId) {
-            console.log(`[MentalHealth] Skipping ${username}: No userId stored`);
-            continue;
           }
           
           // Send check-in DM
@@ -298,5 +323,6 @@ module.exports = {
   sendMentalHealthCheckInDM,
   checkIfUserIsOkay,
   initializeMentalHealthCheckInScheduler,
+  isUserMentalHealthCheckInsEnabled,
 };
 
