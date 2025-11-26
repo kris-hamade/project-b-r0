@@ -42,8 +42,10 @@ const {
   setMentalHealthCheckInFlag, 
   clearMentalHealthCheckInFlag, 
   checkIfUserIsOkay,
-  initializeMentalHealthCheckInScheduler 
+  initializeMentalHealthCheckInScheduler,
+  isUserMentalHealthCheckInsEnabled
 } = require("../utils/mentalHealthCheckIn");
+const UserMentalHealthSettings = require("../models/userMentalHealthSettings");
 
 // Include the required packages for slash commands
 const { REST } = require("@discordjs/rest");
@@ -104,6 +106,18 @@ async function handleMessage(message) {
         if (wantsToStop) {
           // User wants to stop receiving check-in messages
           await clearMentalHealthCheckInFlag(username);
+          
+          // Also disable mental health check-ins for this user
+          await UserMentalHealthSettings.findOneAndUpdate(
+            { userId: message.author.id },
+            { 
+              userId: message.author.id,
+              username: username,
+              mentalHealthCheckInsEnabled: false 
+            },
+            { upsert: true, new: true }
+          );
+          console.log(`[MentalHealth] Disabled mental health check-ins for ${username} after request to stop`);
           
           // Send acknowledgment that respects their request
           const Personas = require("../models/personas");
@@ -299,50 +313,58 @@ async function handleMessage(message) {
     // ============================ Mental Health Check-In Detection =============================
     // If high sensitivity detected, set mental health check-in flag and send immediate DM
     // Also clear recentMessages to prevent high-sensitivity context from contaminating future responses
+    // Only trigger if the user has enabled mental health check-ins (default is off)
     if (classification.sensitivity === "high") {
       try {
         const username = message.author.username;
         const userId = message.author.id;
         const channelId = message.channel.id;
         
-        // Check if we already have a flag set and sent a recent DM
-        const ChatConfig = require("../models/chatConfig");
-        const existingConfig = await ChatConfig.findOne({ 
-          username, 
-          channelID: channelId,
-          needsMentalHealthCheckIn: true 
-        });
+        // Check if user has mental health check-ins enabled (default is off)
+        const userHasCheckInsEnabled = await isUserMentalHealthCheckInsEnabled(userId);
         
-        // Only send immediate DM if we haven't sent one recently (within last hour)
-        let shouldSendImmediateDM = true;
-        if (existingConfig && existingConfig.lastCheckInAttempt) {
-          const hoursSinceLastAttempt = moment().diff(moment(existingConfig.lastCheckInAttempt), 'hours');
-          if (hoursSinceLastAttempt < 1) {
-            shouldSendImmediateDM = false;
-            console.log(`[MentalHealth] Skipping immediate DM for ${username}: Sent ${hoursSinceLastAttempt} hours ago`);
+        if (userHasCheckInsEnabled) {
+          // Check if we already have a flag set and sent a recent DM
+          const ChatConfig = require("../models/chatConfig");
+          const existingConfig = await ChatConfig.findOne({ 
+            username, 
+            channelID: channelId,
+            needsMentalHealthCheckIn: true 
+          });
+          
+          // Only send immediate DM if we haven't sent one recently (within last hour)
+          let shouldSendImmediateDM = true;
+          if (existingConfig && existingConfig.lastCheckInAttempt) {
+            const hoursSinceLastAttempt = moment().diff(moment(existingConfig.lastCheckInAttempt), 'hours');
+            if (hoursSinceLastAttempt < 1) {
+              shouldSendImmediateDM = false;
+              console.log(`[MentalHealth] Skipping immediate DM for ${username}: Sent ${hoursSinceLastAttempt} hours ago`);
+            }
           }
-        }
-        
-        // Set the flag in the actual channel config
-        await setMentalHealthCheckInFlag(username, userId, channelId);
-        console.log(`[MentalHealth] High sensitivity detected for ${username}, check-in flag set`);
-        
-        // Clear recentMessages to prevent high-sensitivity messages from influencing future responses
-        // This ensures the bot responds to the current message without mental health context bleeding into normal conversation
-        const originalRecentCount = recentMessages.length;
-        recentMessages = []; // Clear recent messages to prevent contamination
-        console.log(`[MentalHealth] Cleared ${originalRecentCount} recent messages from context to prevent mental health topic persistence`);
-        
-        // Send immediate DM check-in only if we haven't sent one recently
-        if (shouldSendImmediateDM) {
-          try {
-            const { sendMentalHealthCheckInDM } = require("../utils/mentalHealthCheckIn");
-            await sendMentalHealthCheckInDM(userId, client);
-            console.log(`[MentalHealth] Immediate check-in DM sent to ${username}`);
-          } catch (dmError) {
-            console.error('[MentalHealth] Error sending immediate DM:', dmError);
-            // Don't block the response if DM fails
+          
+          // Set the flag in the actual channel config
+          await setMentalHealthCheckInFlag(username, userId, channelId);
+          console.log(`[MentalHealth] High sensitivity detected for ${username}, check-in flag set`);
+          
+          // Clear recentMessages to prevent high-sensitivity messages from influencing future responses
+          // This ensures the bot responds to the current message without mental health context bleeding into normal conversation
+          const originalRecentCount = recentMessages.length;
+          recentMessages = []; // Clear recent messages to prevent contamination
+          console.log(`[MentalHealth] Cleared ${originalRecentCount} recent messages from context to prevent mental health topic persistence`);
+          
+          // Send immediate DM check-in only if we haven't sent one recently
+          if (shouldSendImmediateDM) {
+            try {
+              const { sendMentalHealthCheckInDM } = require("../utils/mentalHealthCheckIn");
+              await sendMentalHealthCheckInDM(userId, client);
+              console.log(`[MentalHealth] Immediate check-in DM sent to ${username}`);
+            } catch (dmError) {
+              console.error('[MentalHealth] Error sending immediate DM:', dmError);
+              // Don't block the response if DM fails
+            }
           }
+        } else {
+          console.log(`[MentalHealth] High sensitivity detected for ${username}, but mental health check-ins are disabled for this user`);
         }
       } catch (error) {
         console.error('[MentalHealth] Error setting check-in flag:', error);
@@ -892,6 +914,27 @@ const commands = [
   {
     name: "endsirmode",
     description: "End sir mode early",
+  },
+  {
+    name: "mentalhealthcheckin",
+    description: "Toggle mental health DM check-ins on or off (default: off)",
+    options: [
+      {
+        name: "enable",
+        description: "Enable mental health DM check-ins",
+        type: 1, // SUB_COMMAND
+      },
+      {
+        name: "disable",
+        description: "Disable mental health DM check-ins",
+        type: 1, // SUB_COMMAND
+      },
+      {
+        name: "status",
+        description: "View your current mental health check-in settings",
+        type: 1, // SUB_COMMAND
+      },
+    ],
   },
 ];
 
@@ -1561,6 +1604,92 @@ function start() {
             } catch (error) {
               console.error(`[ResponseMode] Error getting status:`, error);
               await interaction.reply("An error occurred while getting response mode status.");
+            }
+          }
+          break;
+        }
+
+        case "mentalhealthcheckin": {
+          const subCommand = interaction.options.getSubcommand();
+          const userId = interaction.user.id;
+          const username = interaction.user.username;
+
+          if (subCommand === "enable") {
+            try {
+              await UserMentalHealthSettings.findOneAndUpdate(
+                { userId },
+                { 
+                  userId,
+                  username,
+                  mentalHealthCheckInsEnabled: true 
+                },
+                { upsert: true, new: true }
+              );
+
+              await interaction.reply({
+                content: `✅ Mental health DM check-ins enabled!\n` +
+                  `When the bot detects that you may be struggling, it will send you a caring check-in DM.\n` +
+                  `You can disable this at any time with \`/mentalhealthcheckin disable\`.`,
+                ephemeral: true
+              });
+            } catch (error) {
+              console.error(`[MentalHealth] Error enabling check-ins:`, error);
+              await interaction.reply({
+                content: "An error occurred while enabling mental health check-ins.",
+                ephemeral: true
+              });
+            }
+          } else if (subCommand === "disable") {
+            try {
+              await UserMentalHealthSettings.findOneAndUpdate(
+                { userId },
+                { 
+                  userId,
+                  username,
+                  mentalHealthCheckInsEnabled: false 
+                },
+                { upsert: true, new: true }
+              );
+
+              // Also clear any pending check-in flags for this user
+              await clearMentalHealthCheckInFlag(username);
+
+              await interaction.reply({
+                content: `✅ Mental health DM check-ins disabled.\n` +
+                  `You will no longer receive check-in DMs from the bot.\n` +
+                  `You can re-enable this at any time with \`/mentalhealthcheckin enable\`.`,
+                ephemeral: true
+              });
+            } catch (error) {
+              console.error(`[MentalHealth] Error disabling check-ins:`, error);
+              await interaction.reply({
+                content: "An error occurred while disabling mental health check-ins.",
+                ephemeral: true
+              });
+            }
+          } else if (subCommand === "status") {
+            try {
+              const settings = await UserMentalHealthSettings.findOne({ userId });
+              const isEnabled = settings?.mentalHealthCheckInsEnabled ?? false;
+
+              const statusMessage = 
+                `**Mental Health Check-In Settings:**\n` +
+                `- Status: ${isEnabled ? '✅ Enabled' : '❌ Disabled (default)'}\n` +
+                (isEnabled 
+                  ? `The bot will send you caring DMs when it detects you may be struggling.\n`
+                  : `The bot will not send you mental health check-in DMs.\n`) +
+                `\nUse \`/mentalhealthcheckin enable\` or \`/mentalhealthcheckin disable\` to change this setting.`;
+
+              await interaction.reply({
+                content: statusMessage,
+                ephemeral: true
+              });
+            } catch (error) {
+              console.error(`[MentalHealth] Error getting status:`, error);
+              await interaction.reply({
+                content: "An error occurred while getting mental health check-in status.",
+                ephemeral: true
+              });
             }
           }
           break;
