@@ -78,8 +78,22 @@ async function handleMessage(message) {
   let username = message.author.username;
   let channelId = message.channel.id;
   
-  // Check if bot is directly @mentioned (available throughout function)
-  const botMentioned = !(message.channel instanceof Discord.DMChannel) && message.mentions.has(client.user.id);
+  // Check if bot is directly @mentioned or if message is a reply to the bot (available throughout function)
+  let botMentioned = !(message.channel instanceof Discord.DMChannel) && message.mentions.has(client.user.id);
+  
+  // Also check if the message is a reply to the bot's message
+  if (!botMentioned && message.reference && message.reference.messageId) {
+    try {
+      const referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+      if (referencedMessage && referencedMessage.author.id === client.user.id) {
+        botMentioned = true;
+        console.log(`[Bot] Message is a reply to bot's message, treating as @mention`);
+      }
+    } catch (error) {
+      console.error('[Bot] Error fetching referenced message:', error);
+      // Continue without treating as mention if we can't fetch the referenced message
+    }
+  }
 
   // Ignore messages from other bots
   if (message.author.bot) return;
@@ -215,21 +229,27 @@ async function handleMessage(message) {
   }
 
   // Skip if message mentions other users (not the bot) - don't respond to @ mentions of other people
+  // UNLESS the bot is also mentioned (always respond if bot is @mentioned)
   if (!(message.channel instanceof Discord.DMChannel)) {
     const mentionedUsers = message.mentions.users;
-    const botMentioned = message.mentions.has(client.user.id);
+    // Use the botMentioned variable defined at the top of the function (includes @mentions and replies)
     const otherUsersMentioned = mentionedUsers.filter(user => user.id !== client.user.id && !user.bot);
     
-    // If other users (not the bot) are mentioned, skip responding
-    if (otherUsersMentioned.size > 0) {
-      console.log(`[Bot] Skipping response: Message mentions other users (not the bot)`);
+    // If other users (not the bot) are mentioned AND bot is NOT mentioned, skip responding
+    if (otherUsersMentioned.size > 0 && !botMentioned) {
+      console.log(`[Bot] Skipping response: Message mentions other users (not the bot) and bot is not mentioned`);
       return;
     }
     
-    // Also skip if @everyone or @here is mentioned
-    if (message.mentions.everyone || message.mentions.roles.size > 0) {
-      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles`);
+    // Also skip if @everyone or @here is mentioned (unless bot is also mentioned)
+    if ((message.mentions.everyone || message.mentions.roles.size > 0) && !botMentioned) {
+      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles (and bot is not mentioned)`);
       return;
+    }
+    
+    // If bot is mentioned along with others, log it but continue
+    if (botMentioned && otherUsersMentioned.size > 0) {
+      console.log(`[Bot] Bot is @mentioned along with other users, responding anyway`);
     }
   }
 
@@ -354,10 +374,11 @@ async function handleMessage(message) {
     // Check if we should respond based on classifier
     const confidenceThreshold = getClassifierConfidenceThreshold();
     
-    // If bot is directly @mentioned, always respond (bypass classifier)
+    // If bot is directly @mentioned, always respond (bypass classifier decision)
+    // But still use classification data for web search and other features
     if (botMentioned) {
       console.log(`[Bot] Direct @mention detected, bypassing classifier decision and responding`);
-      // Continue to generate response - skip classifier check
+      // Continue to generate response - skip classifier check, but keep classification for features
     } else if (!classification.shouldRespond || classification.confidence < confidenceThreshold) {
       console.log(`[Classifier] Skipping response: ${classification.reason} (confidence: ${classification.confidence})`);
       return; // Don't respond - classifier says we shouldn't
@@ -369,17 +390,35 @@ async function handleMessage(message) {
     // This ensures the bot doesn't break if classifier service is down
     shouldUseClassifier = false;
     
-    // Legacy mention check as fallback (only needed if classifier fails)
-    // Note: The check above already handles other user mentions, but we keep this for consistency
-    if (
-      !(message.channel instanceof Discord.DMChannel) &&
-      !message.mentions.has(client.user.id)
-    ) {
-      console.log('[Classifier] Fallback: Bot not mentioned, skipping response');
-      return;
+    // If bot is mentioned, create a default classification so web search and other features still work
+    if (botMentioned) {
+      console.log('[Classifier] Fallback: Bot @mentioned, creating default classification for features');
+      // Create a basic classification that allows web search for questions
+      const isQuestion = /[?]/.test(message.content) || 
+                        /^(who|what|when|where|why|how|tell me|explain|help me)/i.test(message.content.trim());
+      
+      classification = {
+        shouldRespond: true,
+        confidence: 0.95, // High confidence since bot was directly mentioned
+        isQuestion: isQuestion,
+        topic: 'other',
+        sensitivity: 'low',
+        reason: 'Bot directly @mentioned (classifier unavailable, using fallback)'
+      };
+      console.log('[Classifier] Using fallback classification:', classification);
+    } else {
+      // Legacy mention check as fallback (only needed if classifier fails)
+      // Note: The check above already handles other user mentions, but we keep this for consistency
+      if (
+        !(message.channel instanceof Discord.DMChannel) &&
+        !message.mentions.has(client.user.id)
+      ) {
+        console.log('[Classifier] Fallback: Bot not mentioned, skipping response');
+        return;
+      }
+      
+      console.log('[Classifier] Fallback: Proceeding without classification (classifier unavailable)');
     }
-    
-    console.log('[Classifier] Fallback: Proceeding without classification (classifier unavailable)');
   }
   // ============================ End Classifier Integration =============================
 
