@@ -48,6 +48,20 @@ function buildSystemPrompt(classification, currentPersonality = null) {
 }
 
 /**
+ * Build a compact facts context block for system prompt
+ * @param {Array<{fact:string, category?:string}>} facts
+ * @returns {string} compact system context or empty string
+ */
+function buildUserFactsContext(facts = []) {
+  if (!Array.isArray(facts) || facts.length === 0) return "";
+  const items = facts
+    .filter(f => f && typeof f.fact === 'string' && f.fact.trim().length > 0)
+    .map(f => f.fact.trim());
+  if (items.length === 0) return "";
+  return `Known about this user: ${items.join('; ')}`;
+}
+
+/**
  * Build a user prompt with optional context from recent messages
  * @param {string} messageContent - The main message content
  * @param {string[]} [recentMessages] - Optional recent messages for context
@@ -70,6 +84,7 @@ function buildUserPrompt(messageContent, recentMessages = []) {
 
 module.exports = {
   buildSystemPrompt,
+  buildUserFactsContext,
   buildUserPrompt,
 };
 

@@ -3,6 +3,7 @@ const { getHistory } = require("../discord/historyLog.js");
 const { scheduleEvent } = require("../utils/eventScheduler.js");
 const openai = require('./openAi');
 const moment = require('moment-timezone');
+const { buildBaseSystemMessages } = require('../services/langchain/prompt');
 
 // Set the max tokens to 1/4 of the max prompt size
 //const maxTokens = maxPromptSize / 4;
@@ -17,7 +18,8 @@ async function generateResponse(
   imageDescription,
   channelId,
   classification = null,
-  recentMessages = []
+  recentMessages = [],
+  extraSystemContext = ""
 ) {
 
   const chatHistory = await getHistory(nickname, personality, channelId);
@@ -45,38 +47,26 @@ async function generateResponse(
     const currentDateTime = moment().format('MMMM D, YYYY [at] h:mm A');
     const currentYear = moment().format('YYYY');
     
-    const messages = [
-      {
-        role: "system",
-        content: `The current date is ${currentDate} (${currentYear}). Today is ${currentDateTime}. Always use this date when answering questions about dates, time, or current events. Do not use the model's training date or any other date.`
-      },
-      {
-        role: "system",
-        content: `IMPORTANT: You are responding in Discord, which does NOT support markdown tables or charts. When presenting data:
-- Use simple text lists with bullet points or numbered lists
-- Use emoji for visual indicators (📊 📈 📉 ✅ ❌ etc.)
-- For comparisons, use simple text format: "Option A: value | Option B: value"
-- For rankings, use numbered lists: "1. First item\n2. Second item"
-- NEVER use markdown table syntax (| col1 | col2 |)
-- NEVER use markdown code blocks for charts or graphs
-- Keep data presentation simple and readable in plain text
-- Use code blocks only for actual code, not for formatting tables`
-      },
-      {
-        role: "system",
-        content: "Make sure your response is as concise as possible"
-      },
-      {
-        role: "system",
-        content: await personaBuilder(persona),
-      },
-    ];
+    const messages = await buildBaseSystemMessages({
+      currentDate,
+      currentDateTime,
+      currentYear,
+      personaText: await personaBuilder(persona),
+    });
 
     // Add classification-based context if available and not empty
     if (classification && classificationPrompt && classificationPrompt.trim().length > 0) {
       messages.push({
         role: "system",
         content: classificationPrompt,
+      });
+    }
+
+    // Add extra system context (e.g., user facts) when provided
+    if (extraSystemContext && extraSystemContext.trim().length > 0) {
+      messages.push({
+        role: "system",
+        content: extraSystemContext.trim(),
       });
     }
 
@@ -343,6 +333,25 @@ async function shouldRespondCheck(messageContent, classification, recentMessages
     ? `Recent messages in channel: ${recentMessages.slice(-3).join(' | ')}`
     : 'No recent messages';
 
+  // Build structured output parser
+  let formatInstructions = '';
+  let parser = null;
+  try {
+    const { loadCore } = require('../services/langchain/index');
+    const { StructuredOutputParser, z } = await (async () => {
+      const core = await loadCore();
+      return { StructuredOutputParser: core.StructuredOutputParser, z: core.z };
+    })();
+    const schema = z.object({
+      shouldRespond: z.boolean(),
+      reason: z.string()
+    });
+    parser = StructuredOutputParser.fromZodSchema(schema);
+    formatInstructions = parser.getFormatInstructions();
+  } catch (_e) {
+    formatInstructions = 'Return ONLY a JSON object: {"shouldRespond": true/false, "reason": "brief explanation"}';
+  }
+
   const systemPrompt = `The current date is ${currentDate} (${currentYear}). Always use this date when evaluating questions about dates, time, or current events.
 
 You are a quality control assistant for a Discord bot. Your job is to determine if the bot should respond to a message.
@@ -356,8 +365,7 @@ Consider:
 
 The classifier has already determined this message might warrant a response, but you need to apply human-like judgment about timing, quality, and appropriateness.
 
-Respond with ONLY a JSON object in this exact format:
-{"shouldRespond": true/false, "reason": "brief explanation"}`;
+${formatInstructions}`;
 
   const userPrompt = `Message to evaluate: "${messageContent}"
 
@@ -383,7 +391,17 @@ Should the bot respond? Consider if the response would be quality, accurate, hel
       response_format: { type: 'json_object' } // Force JSON response
     });
 
-    const result = JSON.parse(response.choices[0].message.content);
+    const content = response.choices[0].message.content;
+    let result;
+    if (parser) {
+      try {
+        result = await parser.parse(content);
+      } catch (_e) {
+        result = JSON.parse(content);
+      }
+    } else {
+      result = JSON.parse(content);
+    }
     
     // Validate response
     if (typeof result.shouldRespond !== 'boolean' || typeof result.reason !== 'string') {
@@ -510,6 +528,28 @@ async function generateEventData(prompt, channelId, client) {
       "Timezone": "IANA Time Zone"
     };
 
+    // Build structured output parser for event object
+    let eventFormatInstructions = '';
+    let eventParser = null;
+    try {
+      const { loadCore } = require('../services/langchain/index');
+      const { StructuredOutputParser, z } = await (async () => {
+        const core = await loadCore();
+        return { StructuredOutputParser: core.StructuredOutputParser, z: core.z };
+      })();
+      const schema = z.object({
+        "Event Name": z.string(),
+        "Date": z.string(),
+        "Time": z.string(),
+        "Frequency": z.string(),
+        "Timezone": z.string()
+      });
+      eventParser = StructuredOutputParser.fromZodSchema(schema);
+      eventFormatInstructions = eventParser.getFormatInstructions();
+    } catch (_e) {
+      eventFormatInstructions = 'Return ONLY valid JSON matching the provided example keys.';
+    }
+
     const response = await openai.chat.completions.create({
       model: getGlobalGptModel(),
       messages: [
@@ -520,7 +560,10 @@ async function generateEventData(prompt, channelId, client) {
         {
           role: "system",
           content:
-            "The user wants to schedule an event based on the following template JSON. Please fill in the details based on the user's request:\n\n" +
+            "The user wants to schedule an event based on the following template JSON. Please fill in the details based on the user's request.\n" +
+            "Follow these formatting rules strictly:\n" +
+            eventFormatInstructions + "\n\n" +
+            "Template JSON (example):\n" +
             JSON.stringify(exampleJson, null, 2) + "\n\nUser's Request: "
         },
         {
@@ -536,7 +579,16 @@ async function generateEventData(prompt, channelId, client) {
     console.log("Generated message from GPT:", message);
 
     try {
-      const eventData = JSON.parse(message);
+      let eventData;
+      if (eventParser) {
+        try {
+          eventData = await eventParser.parse(message);
+        } catch (_e) {
+          eventData = JSON.parse(message);
+        }
+      } else {
+        eventData = JSON.parse(message);
+      }
       const scheduler = await scheduleEvent(eventData, channelId, client);
       return scheduler;
     } catch (error) {

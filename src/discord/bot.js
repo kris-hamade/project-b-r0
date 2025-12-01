@@ -34,6 +34,7 @@ const { DiceRoll } = require("@dice-roller/rpg-dice-roller");
 const { initEntropyEngine, createDiceRng } = require("../utils/entropyEngine");
 const { classifyMessage } = require("../services/classifierClient");
 const { buildSystemPrompt, buildUserPrompt } = require("../prompting/promptBuilder");
+const { buildUserFactsContext } = require("../prompting/promptBuilder");
 const { getClassifierConfidenceThreshold } = require("../utils/config");
 const ChannelCheckIn = require("../models/channelCheckIn");
 const { initializeCheckInScheduler } = require("../utils/channelCheckIn");
@@ -46,6 +47,17 @@ const {
   isUserMentalHealthCheckInsEnabled
 } = require("../utils/mentalHealthCheckIn");
 const UserMentalHealthSettings = require("../models/userMentalHealthSettings");
+const { 
+  isMemoryEnabled, 
+  setMemoryEnabled, 
+  getUserFacts, 
+  upsertFacts, 
+  listFacts, 
+  clearAllFacts, 
+  deactivateFacts 
+} = require("../services/memory/userMemoryStore");
+const { extractFactsFromMessage } = require("../services/memory/factExtractor");
+const { getSummary, updateSummary } = require("../services/memory/summaryMemory");
 
 // Include the required packages for slash commands
 const { REST } = require("@discordjs/rest");
@@ -550,6 +562,27 @@ async function handleMessage(message) {
   try {
     // Generate response from ChatGPT API
     let responseText;
+
+    // ============================ Memory: fetch facts for prompt =============================
+    let extraSystemContext = "";
+    try {
+      const serverId = message.guild?.id;
+      if (process.env.MEMORY_ENABLED !== 'false' && serverId) {
+        const enabled = await isMemoryEnabled(message.author.id, serverId);
+        if (enabled) {
+          const facts = await getUserFacts(message.author.id, serverId, { onlyActive: true });
+          const factsContext = buildUserFactsContext(facts);
+          const summary = await getSummary(message.author.id, serverId);
+          const pieces = [];
+          if (factsContext) pieces.push(factsContext);
+          if (summary) pieces.push(`Conversation summary: ${summary}`);
+          extraSystemContext = pieces.join(' ');
+        }
+      }
+    } catch (e) {
+      console.warn('[Memory] Failed to build facts context:', e.message);
+    }
+    // ============================ End Memory: fetch facts =============================
     if (imageDescription) {
       responseText = await generateImageResponse(
         message.content,
@@ -570,7 +603,8 @@ async function handleMessage(message) {
         imageDescription,
         channelId,
         classification, // Pass classification to enhance prompts
-        recentMessages // Pass recent messages for conversation context
+        recentMessages, // Pass recent messages for conversation context
+        extraSystemContext // Memory facts context
       );
     }
 
@@ -619,6 +653,39 @@ async function handleMessage(message) {
     } else {
       await message.channel.send({ content: responseText, flags: Discord.MessageFlags.SuppressEmbeds });
     }
+
+    // ============================ Memory: extract facts after response =============================
+    try {
+      const serverId = message.guild?.id;
+      if (process.env.MEMORY_ENABLED !== 'false' && serverId) {
+        const sensitivity = classification?.sensitivity || 'low';
+        if (sensitivity !== 'high') {
+          const enabled = await isMemoryEnabled(message.author.id, serverId);
+          if (enabled) {
+            const extracted = await extractFactsFromMessage(message.content);
+            if (Array.isArray(extracted) && extracted.length > 0) {
+              const results = await upsertFacts(message.author.id, username, serverId, extracted.map(f => ({
+                ...f,
+                sourceMessageId: message.id
+              })));
+              if ((results.added + results.updated + results.deactivated) > 0) {
+                console.log('[Memory] Updated facts:', results);
+              }
+            }
+            // Update conversation summary
+            try {
+              const prev = await getSummary(message.author.id, serverId);
+              await updateSummary(message.author.id, username, serverId, prev, message.content, responseText);
+            } catch (sumErr) {
+              console.warn('[Memory] Summary update failed:', sumErr.message);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Memory] Extraction failed:', e.message);
+    }
+    // ============================ End Memory: extract facts =============================
   } catch (err) {
     console.error(err);
 
@@ -699,6 +766,40 @@ function startSirMode(interaction, textChannel, checkTime, interval) {
 
 // Slash command configuration
 const commands = [
+  {
+    name: "memory",
+    description: "Manage personal memory for this server",
+    options: [
+      { name: "status", description: "Show memory status", type: 1 },
+      { name: "enable", description: "Enable memory for you here", type: 1 },
+      { name: "disable", description: "Disable memory for you here", type: 1 },
+      { 
+        name: "list", 
+        description: "List known facts (top 20)", 
+        type: 1 
+      },
+      { 
+        name: "forget", 
+        description: "Forget facts by text or category", 
+        type: 1,
+        options: [
+          {
+            name: "text",
+            type: 3,
+            description: "Text to match in facts (optional)",
+            required: false
+          },
+          {
+            name: "category",
+            type: 3,
+            description: "Category to clear (preference_like, preference_dislike, bio, pronouns, timezone, game_role, other)",
+            required: false
+          }
+        ]
+      },
+      { name: "clear", description: "Clear all facts for you here", type: 1 }
+    ],
+  },
   {
     name: "personas",
     description: "Manage personas",
@@ -1083,6 +1184,64 @@ function start() {
       const { commandName } = interaction;
 
       switch (commandName) {
+        case "memory": {
+          const userId = interaction.user.id;
+          const username = interaction.user.username;
+          const serverId = interaction.guildId; // per-server memory
+          const sub = interaction.options.getSubcommand();
+
+          if (!serverId) {
+            await interaction.reply({ content: "Memory is only available in servers (not DMs).", ephemeral: true });
+            break;
+          }
+
+          try {
+            if (sub === "status") {
+              const enabled = await isMemoryEnabled(userId, serverId);
+              const facts = await listFacts(userId, serverId, 5);
+              const preview = facts.map(f => `- ${f.fact} (${f.category})`).join('\n') || "(no facts)";
+              await interaction.reply({
+                content: `Memory is ${enabled ? '✅ enabled' : '❌ disabled'} for you in this server.\nSample facts:\n${preview}`,
+                ephemeral: true
+              });
+            } else if (sub === "enable") {
+              await setMemoryEnabled(userId, username, serverId, true);
+              await interaction.reply({ content: "✅ Memory enabled for you in this server.", ephemeral: true });
+            } else if (sub === "disable") {
+              await setMemoryEnabled(userId, username, serverId, false);
+              await interaction.reply({ content: "✅ Memory disabled for you in this server.", ephemeral: true });
+            } else if (sub === "list") {
+              const facts = await listFacts(userId, serverId, 20);
+              const lines = facts.map((f, i) => `${i + 1}. ${f.fact} (${f.category})`);
+              await interaction.reply({
+                content: lines.length ? lines.join('\n') : "No stored facts for you in this server.",
+                ephemeral: true
+              });
+            } else if (sub === "forget") {
+              const text = interaction.options.getString("text") || "";
+              const category = interaction.options.getString("category") || "";
+              if (!text && !category) {
+                await interaction.reply({ content: "Provide at least one of: text or category.", ephemeral: true });
+                break;
+              }
+              const textNorm = (text || "").toLowerCase().trim();
+              const categoryNorm = (category || "").toLowerCase().trim();
+              const count = await deactivateFacts(userId, serverId, (f) => {
+                const byText = textNorm ? (f.fact || '').toLowerCase().includes(textNorm) : false;
+                const byCategory = categoryNorm ? ((f.category || '').toLowerCase() === categoryNorm) : false;
+                return (text ? byText : false) || (category ? byCategory : false);
+              });
+              await interaction.reply({ content: `✅ Forgotten ${count} fact(s).`, ephemeral: true });
+            } else if (sub === "clear") {
+              const count = await clearAllFacts(userId, serverId);
+              await interaction.reply({ content: `✅ Cleared ${count} fact(s).`, ephemeral: true });
+            }
+          } catch (err) {
+            console.error('[Memory] Command error:', err);
+            await interaction.reply({ content: "An error occurred handling memory command.", ephemeral: true });
+          }
+          break;
+        }
         case "personas": {
           const subCommand = interaction.options.getSubcommand();
           if (subCommand === "list") {
