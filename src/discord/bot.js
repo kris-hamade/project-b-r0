@@ -267,39 +267,35 @@ async function handleMessage(message) {
       return;
     }
     
-    // Also skip if @everyone or @here is mentioned (unless bot is also mentioned)
-    if ((message.mentions.everyone || message.mentions.roles.size > 0) && !botMentioned) {
-      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles (and bot is not mentioned)`);
+    // Check channel response mode setting (respond without mention)
+    // This is checked BEFORE @everyone check to respect the channel setting
+    let respondWithoutMention = false;
+    try {
+      const responseMode = await ChannelResponseMode.findOne({ channelId: message.channel.id });
+      respondWithoutMention = responseMode?.respondWithoutMention ?? false; // Default to false (off)
+      
+      console.log(`[ResponseMode] Channel setting: respondWithoutMention=${respondWithoutMention}, botMentioned=${message.mentions.has(client.user.id)}`);
+    } catch (error) {
+      console.error('[ResponseMode] Error checking channel response mode:', error);
+      // On error, default to requiring mention (fail closed)
+      respondWithoutMention = false;
+    }
+    
+    // Skip if @everyone or @here is mentioned (unless bot is also mentioned OR responseMode is enabled)
+    if ((message.mentions.everyone || message.mentions.roles.size > 0) && !botMentioned && !respondWithoutMention) {
+      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles (and bot is not mentioned and responseMode is disabled)`);
+      return;
+    }
+    
+    // If respondWithoutMention is false (default), require @mention (but allow if @everyone was handled above)
+    if (!respondWithoutMention && !message.mentions.has(client.user.id)) {
+      console.log(`[ResponseMode] Skipping response: Bot not mentioned and respondWithoutMention is disabled for this channel`);
       return;
     }
     
     // If bot is mentioned along with others, log it but continue
     if (botMentioned && otherUsersMentioned.size > 0) {
       console.log(`[Bot] Bot is @mentioned along with other users, responding anyway`);
-    }
-  }
-
-  // Check channel response mode setting (respond without mention)
-  // This is checked BEFORE classifier to respect the channel setting
-  if (!(message.channel instanceof Discord.DMChannel)) {
-    try {
-      const responseMode = await ChannelResponseMode.findOne({ channelId: message.channel.id });
-      const respondWithoutMention = responseMode?.respondWithoutMention ?? false; // Default to false (off)
-      
-      // If respondWithoutMention is false (default), require @mention
-      if (!respondWithoutMention && !message.mentions.has(client.user.id)) {
-        console.log(`[ResponseMode] Skipping response: Bot not mentioned and respondWithoutMention is disabled for this channel`);
-        return;
-      }
-      
-      console.log(`[ResponseMode] Channel setting: respondWithoutMention=${respondWithoutMention}, botMentioned=${message.mentions.has(client.user.id)}`);
-    } catch (error) {
-      console.error('[ResponseMode] Error checking channel response mode:', error);
-      // On error, default to requiring mention (fail closed)
-      if (!message.mentions.has(client.user.id)) {
-        console.log('[ResponseMode] Error occurred, defaulting to require mention');
-        return;
-      }
     }
   }
 
