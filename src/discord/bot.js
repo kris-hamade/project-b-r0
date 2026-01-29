@@ -93,7 +93,27 @@ async function handleMessage(message) {
   let channelId = message.channel.id;
   
   // Check if bot is directly @mentioned or if message is a reply to the bot (available throughout function)
-  let botMentioned = !(message.channel instanceof Discord.DMChannel) && message.mentions.has(client.user.id);
+  // IMPORTANT: When @everyone is used, Discord includes ALL users in mentions, so we need to check
+  // if @everyone/@here is present first, and if so, verify explicit bot mention in content
+  const hasEveryoneOrHere = !(message.channel instanceof Discord.DMChannel) && 
+    (message.mentions.everyone || message.mentions.here || /@everyone/i.test(message.content) || /@here/i.test(message.content));
+  
+  let botMentioned = false;
+  
+  if (!(message.channel instanceof Discord.DMChannel)) {
+    if (hasEveryoneOrHere) {
+      // If @everyone/@here is present, check for explicit bot mention in content
+      // Discord formats explicit mentions as <@botId> or <@!botId>
+      const botMentionPattern = new RegExp(`<@!?${client.user.id}>`);
+      botMentioned = botMentionPattern.test(message.content);
+      if (botMentioned) {
+        console.log(`[Bot] Bot explicitly mentioned in @everyone/@here message`);
+      }
+    } else {
+      // Normal case: check if bot is in mentions (not via @everyone)
+      botMentioned = message.mentions.has(client.user.id);
+    }
+  }
   
   // Also check if the message is a reply to the bot's message
   if (!botMentioned && message.reference && message.reference.messageId) {
@@ -164,7 +184,11 @@ async function handleMessage(message) {
             []
           );
           
-          await message.channel.send({ content: stopMessage, flags: Discord.MessageFlags.SuppressEmbeds });
+          await message.channel.send({ 
+            content: sanitizeMessage(stopMessage), 
+            flags: Discord.MessageFlags.SuppressEmbeds,
+            allowedMentions: { parse: [] }
+          });
           console.log(`[MentalHealth] Cleared check-in flag for ${username} after request to stop messaging`);
           return; // Don't process as a normal message
         } else if (isOkay && confidence >= 0.6) {
@@ -197,7 +221,11 @@ async function handleMessage(message) {
             []
           );
           
-          await message.channel.send({ content: acknowledgment, flags: Discord.MessageFlags.SuppressEmbeds });
+          await message.channel.send({ 
+            content: sanitizeMessage(acknowledgment), 
+            flags: Discord.MessageFlags.SuppressEmbeds,
+            allowedMentions: { parse: [] }
+          });
           console.log(`[MentalHealth] Cleared check-in flag for ${username} after positive response`);
           return; // Don't process as a normal message
         } else if (!isOkay) {
@@ -220,7 +248,11 @@ async function handleMessage(message) {
             []
           );
           
-          await message.channel.send({ content: supportMessage, flags: Discord.MessageFlags.SuppressEmbeds });
+          await message.channel.send({ 
+            content: sanitizeMessage(supportMessage), 
+            flags: Discord.MessageFlags.SuppressEmbeds,
+            allowedMentions: { parse: [] }
+          });
           console.log(`[MentalHealth] User ${username} still needs support, keeping flag active`);
           return; // Don't process as a normal message
         }
@@ -274,21 +306,28 @@ async function handleMessage(message) {
       const responseMode = await ChannelResponseMode.findOne({ channelId: message.channel.id });
       respondWithoutMention = responseMode?.respondWithoutMention ?? false; // Default to false (off)
       
-      console.log(`[ResponseMode] Channel setting: respondWithoutMention=${respondWithoutMention}, botMentioned=${message.mentions.has(client.user.id)}`);
+      console.log(`[ResponseMode] Channel setting: respondWithoutMention=${respondWithoutMention}, botMentioned=${botMentioned}`);
     } catch (error) {
       console.error('[ResponseMode] Error checking channel response mode:', error);
       // On error, default to requiring mention (fail closed)
       respondWithoutMention = false;
     }
     
-    // Skip if @everyone or @here is mentioned (unless bot is also mentioned OR responseMode is enabled)
-    if ((message.mentions.everyone || message.mentions.roles.size > 0) && !botMentioned && !respondWithoutMention) {
-      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles (and bot is not mentioned and responseMode is disabled)`);
+    // CRITICAL: Skip if @everyone or @here is mentioned UNLESS bot is explicitly mentioned
+    // This is a safety check - responseMode should NOT allow responding to @everyone
+    // Note: hasEveryoneOrHere is already checked above when determining botMentioned
+    // Also check for role mentions
+    const hasRoleMentions = message.mentions.roles.size > 0;
+    
+    // Only respond to @everyone/@here if the bot is explicitly mentioned (safety first)
+    if ((hasEveryoneOrHere || hasRoleMentions) && !botMentioned) {
+      console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles (and bot is not explicitly mentioned - safety check)`);
       return;
     }
     
     // If respondWithoutMention is false (default), require @mention (but allow if @everyone was handled above)
-    if (!respondWithoutMention && !message.mentions.has(client.user.id)) {
+    // Use botMentioned which correctly handles @everyone cases
+    if (!respondWithoutMention && !botMentioned) {
       console.log(`[ResponseMode] Skipping response: Bot not mentioned and respondWithoutMention is disabled for this channel`);
       return;
     }
@@ -439,9 +478,10 @@ async function handleMessage(message) {
     } else {
       // Legacy mention check as fallback (only needed if classifier fails)
       // Note: The check above already handles other user mentions, but we keep this for consistency
+      // Use botMentioned which correctly handles @everyone cases
       if (
         !(message.channel instanceof Discord.DMChannel) &&
-        !message.mentions.has(client.user.id)
+        !botMentioned
       ) {
         console.log('[Classifier] Fallback: Bot not mentioned, skipping response');
         return;
@@ -640,14 +680,26 @@ async function handleMessage(message) {
       console.log(`[MentalHealth] Skipping history save for high-sensitivity response in channel ${channelId} to prevent future mental health references`);
     }
 
+    // CRITICAL: Sanitize response text to prevent @everyone and @here mentions
+    // This is a security measure - the bot should NEVER mention @everyone or @here
+    responseText = sanitizeMessage(responseText);
+    
     const MAX_MESSAGE_LENGTH = 2000;
     if (responseText.length > MAX_MESSAGE_LENGTH) {
       let messageChunks = splitIntoChunks(responseText, MAX_MESSAGE_LENGTH);
       for (const chunk of messageChunks) {
-        await message.channel.send({ content: chunk, flags: Discord.MessageFlags.SuppressEmbeds });
+        await message.channel.send({ 
+          content: sanitizeMessage(chunk), 
+          flags: Discord.MessageFlags.SuppressEmbeds,
+          allowedMentions: { parse: [] } // Disable ALL mentions including @everyone
+        });
       }
     } else {
-      await message.channel.send({ content: responseText, flags: Discord.MessageFlags.SuppressEmbeds });
+      await message.channel.send({ 
+        content: responseText, 
+        flags: Discord.MessageFlags.SuppressEmbeds,
+        allowedMentions: { parse: [] } // Disable ALL mentions including @everyone
+      });
     }
 
     // ============================ Memory: extract facts after response =============================
@@ -1907,6 +1959,17 @@ function start() {
       console.error("Error during client login:", err);
       process.exit(1); // Exit if login fails
     });
+}
+
+/**
+ * Sanitizes message content to prevent @everyone and @here mentions
+ * @param {string} text - The text to sanitize
+ * @returns {string} Sanitized text with @everyone and @here mentions broken
+ */
+function sanitizeMessage(text) {
+  if (!text) return text;
+  // Use zero-width space to break @everyone and @here mentions
+  return text.replace(/@everyone/gi, '@\u200beveryone').replace(/@here/gi, '@\u200bhere');
 }
 
 /**
