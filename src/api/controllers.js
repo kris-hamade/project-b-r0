@@ -1,11 +1,11 @@
 const moment = require("moment");
 const ChatHistory = require('../models/chatHistory');
 const Roll20Data = require("../models/roll20Data");
-const fs = require('fs').promises;
 
 const {
   getConfigInformation,
   getUptime,
+  getPublicConfig,
 } = require("../utils/config");
 
 const { processWebhook } = require("../utils/webhook");
@@ -19,7 +19,7 @@ exports.status = async (c) => {
   console.log(
     `[${moment().format("YYYY-MM-DD HH:mm:ss")}] Bot status requested.`
   );
-  return c.text("Bot is up and running");
+  return c.json({ status: "ok", uptime: getUptime() });
 };
 
 /**
@@ -31,7 +31,7 @@ exports.config = async (c) => {
   console.log(
     `[${moment().format("YYYY-MM-DD HH:mm:ss")}] Bot config requested.`
   );
-  return c.json(getConfigInformation());
+  return c.json(getPublicConfig());
 };
 
 /**
@@ -55,13 +55,14 @@ exports.clearChatHistory = async (c) => {
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Clear chat history requested.`);
 
   try {
-    // Remove all documents from the ChatHistory collection
-    await ChatHistory.deleteMany({});
+    const guildId = c.req.query('guildId') || c.req.header('x-guild-id');
+    if (!guildId) return c.json({ success: false, message: 'guildId is required.' }, 400);
+    const result = await ChatHistory.deleteMany({ guildId });
 
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Chat history cleared successfully.`);
     return c.json({
       success: true,
-      message: "Chat history cleared successfully.",
+      message: `Deleted ${result.deletedCount} chat history records.`,
     });
   } catch (err) {
     console.error(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] An error occurred while clearing the chat history:`, err);
@@ -81,8 +82,11 @@ exports.getChatHistory = async (c) => {
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Chat history requested.`);
 
   try {
-    // Get all documents from the ChatHistory collection
-    const chatHistory = await ChatHistory.find({});
+    const guildId = c.req.query('guildId') || c.req.header('x-guild-id');
+    if (!guildId) return c.json({ success: false, message: 'guildId is required.' }, 400);
+    const limit = Math.min(Math.max(Number(c.req.query('limit')) || 100, 1), 500);
+    const skip = Math.max(Number(c.req.query('skip')) || 0, 0);
+    const chatHistory = await ChatHistory.find({ guildId }).sort({ _id: -1 }).skip(skip).limit(limit).lean();
 
     console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Chat history retrieved.`);
     return c.json({
@@ -106,6 +110,10 @@ exports.getChatHistory = async (c) => {
 exports.uploadRoll20Data = async (c) => {
   console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Roll20 data upload requested.`);
   const type = c.req.param('type');
+  const normalizedType = { journal: 'Journal', handouts: 'Handouts' }[String(type).toLowerCase()];
+  const guildId = c.req.query('guildId') || c.req.header('x-guild-id');
+  if (!normalizedType) return c.json({ success: false, message: "type must be journal or handouts." }, 400);
+  if (!guildId) return c.json({ success: false, message: "guildId is required." }, 400);
 
   try {
     // Get file from form data (Hono handles multipart/form-data)
@@ -126,12 +134,10 @@ exports.uploadRoll20Data = async (c) => {
     let uploadedFileName;
 
     if (file instanceof File) {
+      const maxBytes = Number(process.env.ROLL20_UPLOAD_MAX_BYTES) || 2 * 1024 * 1024;
+      if (file.size > maxBytes) return c.json({ success: false, message: "File is too large." }, 413);
       uploadedFileName = file.name;
       uploadedDataRaw = await file.text();
-    } else if (typeof file === 'string') {
-      // If it's a file path (from multer or similar)
-      uploadedFileName = file;
-      uploadedDataRaw = await fs.readFile(file, 'utf-8');
     } else {
       return c.json({
         success: false,
@@ -150,52 +156,48 @@ exports.uploadRoll20Data = async (c) => {
       }, 400);
     }
 
-    // If the uploaded file is named 'test.json', don't make any modifications
-    if (uploadedFileName === "test.json") {
-      console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Test upload succeeded.`);
-      return c.json({
-        success: true,
-        message: "Test Upload Succeeded.",
-      });
-    }
-
     try {
       // Parse uploaded file
       const uploadedData = JSON.parse(uploadedDataRaw);
+      if (!Array.isArray(uploadedData) || uploadedData.length > 5000) {
+        return c.json({ success: false, message: "JSON must be an array of at most 5,000 entries." }, 400);
+      }
+      const sanitizedEntries = uploadedData.map(entry => ({
+        Name: typeof entry?.Name === 'string' ? entry.Name.trim().slice(0, 300) : '',
+        Bio: typeof entry?.Bio === 'string' ? entry.Bio.slice(0, 100000) : '',
+      }));
+      if (sanitizedEntries.some(entry => !entry.Name)) {
+        return c.json({ success: false, message: "Every entry requires a Name string." }, 400);
+      }
 
       console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] Uploaded data retrieved.`);
 
-      let updateCount = 0;
-      let newEntryCount = 0;
-
-      // Get all existing documents
-      const existingDocs = await Roll20Data.find({});
-      const existingDocsMap = new Map();
-      existingDocs.forEach(doc => existingDocsMap.set(doc.Name, doc));
-
-      // Compare and update data
-      for (const uploadedEntry of uploadedData) {
-        const existingDoc = existingDocsMap.get(uploadedEntry.Name);
-        if (existingDoc) {
-          // If the Name exists in the server data, update the Bio if necessary
-          if (uploadedEntry.Bio !== existingDoc.Bio) {
-            existingDoc.Bio = uploadedEntry.Bio;
-            await existingDoc.save();
-            updateCount++;
-          }
-        } else {
-          // If the Name doesn't exist in the server data, add the new entry
-          const newDoc = new Roll20Data(uploadedEntry);
-          await newDoc.save();
-          newEntryCount++;
-        }
+      const dedupedEntries = [...new Map(sanitizedEntries.map(entry => [entry.Name, entry])).values()];
+      const operations = dedupedEntries.map(entry => ({
+        updateOne: {
+          filter: { guildId, type: normalizedType, Name: entry.Name },
+          update: { $set: { Bio: entry.Bio, guildId, type: normalizedType } },
+          upsert: true,
+        },
+      }));
+      const result = operations.length ? await Roll20Data.bulkWrite(operations, { ordered: false }) : null;
+      const updateCount = result?.modifiedCount || 0;
+      const newEntryCount = result?.upsertedCount || 0;
+      let removedCount = 0;
+      if (c.req.query('replace') === 'true') {
+        const removal = await Roll20Data.deleteMany({
+          guildId,
+          type: normalizedType,
+          Name: { $nin: dedupedEntries.map(entry => entry.Name) },
+        });
+        removedCount = removal.deletedCount;
       }
 
       console.log(`[${moment().format("YYYY-MM-DD HH:mm:ss")}] ${updateCount} entries updated, ${newEntryCount} new entries added.`);
 
       return c.json({
         success: true,
-        message: `${updateCount} entries updated, ${newEntryCount} new entries added.`,
+        message: `${updateCount} updated, ${newEntryCount} added, ${removedCount} removed.`,
       });
     } catch (err) {
       console.error(err);
@@ -221,6 +223,6 @@ exports.uploadRoll20Data = async (c) => {
 exports.webhookHandler = async (c) => {
   // Process the incoming webhook data here
   const body = await c.req.json();
-  processWebhook(body);
+  await processWebhook(body);
   return c.text('Webhook data received!', 200);
 };

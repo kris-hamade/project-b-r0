@@ -40,12 +40,11 @@ async function extractFactsFromMessage(messageContent) {
   });
 
   const response = await openai.chat.completions.create({
-    model: process.env.FACT_EXTRACTOR_MODEL || 'gpt-4o-mini',
+    model: process.env.FACT_EXTRACTOR_MODEL || 'gpt-5.6-luna',
     messages: [
       { role: 'system', content: 'You are a precise information extraction system.' },
       { role: 'user', content: prompt },
     ],
-    temperature: 0.1,
     response_format: { type: 'json_object' },
   });
 

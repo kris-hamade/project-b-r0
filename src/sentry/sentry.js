@@ -2,10 +2,11 @@ const Sentry = require("@sentry/node");
 
 
 const sentryLogging = async () => {
+  if (!process.env.SENTRY_DSN) return;
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
-    tracesSampleRate: 1.0, // Adjust this value based on your needs
-    integrations: [new Sentry.Integrations.Http({ tracing: true })],
+    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE) || 0.1,
+    sendDefaultPii: false,
   });
 };
 

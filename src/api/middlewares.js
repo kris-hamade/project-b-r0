@@ -1,6 +1,16 @@
 const Roll20Data = require("../models/roll20Data");
+const crypto = require("crypto");
 
-const API_KEY = process.env.API_KEY;
+function safeEqual(provided, expected) {
+    if (!provided || !expected) return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function extractCredential(header = '') {
+    return header.replace(/^Bearer\s+/i, '').trim();
+}
 
 /**
  * Error handler middleware for Hono
@@ -20,14 +30,22 @@ exports.errorHandler = function (err, c) {
  * @returns {Promise<Response|void>}
  */
 exports.authMiddleware = async (c, next) => {
-    const authHeader = c.req.header('authorization');
+    const credential = extractCredential(c.req.header('authorization'));
+    const apiKey = process.env.API_KEY;
 
-    if (!authHeader || authHeader !== API_KEY) {
+    if (!safeEqual(credential, apiKey)) {
         return c.json({
             message: 'Unauthorized'
         }, 401);
     }
 
+    await next();
+};
+
+exports.webhookAuthMiddleware = async (c, next) => {
+    const credential = extractCredential(c.req.header('authorization')) || c.req.header('x-webhook-key');
+    const webhookKey = process.env.WEBHOOK_KEY || process.env.API_KEY;
+    if (!safeEqual(credential, webhookKey)) return c.json({ message: 'Unauthorized' }, 401);
     await next();
 };
 
@@ -57,8 +75,11 @@ exports.getCurrentHandouts = async (c) => {
  */
 async function getCurrentRoll20Data(type, c) {
     try {
-        // Query MongoDB
-        const data = await Roll20Data.find({}).lean();
+        const guildId = c.req.query('guildId') || c.req.header('x-guild-id');
+        if (!guildId) return c.json({ success: false, message: 'guildId is required.' }, 400);
+        const limit = Math.min(Math.max(Number(c.req.query('limit')) || 100, 1), 500);
+        const skip = Math.max(Number(c.req.query('skip')) || 0, 0);
+        const data = await Roll20Data.find({ guildId, type }).sort({ Name: 1 }).skip(skip).limit(limit).lean();
 
         if (!data || data.length === 0) {
             return c.json({
@@ -79,3 +100,5 @@ async function getCurrentRoll20Data(type, c) {
         }, 500);
     }
 }
+
+exports._safeEqual = safeEqual;

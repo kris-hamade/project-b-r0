@@ -1,6 +1,7 @@
 const WebhookSubs = require('../models/webhookSub');
 const client = require('../discord/client');
 const { generateWebhookReport } = require('../openai/gpt')
+const { SAFE_ALLOWED_MENTIONS, sanitizeMessage } = require('./security');
 
 let subs = [];
 
@@ -14,7 +15,7 @@ async function loadWebhookSubs() {
 }
 
 async function processWebhook(data) {
-    console.log("Received data:", JSON.stringify(data));
+    if (!data || typeof data !== 'object') throw new Error('Webhook body must be an object');
 
     const matchingChannelIds = [];
 
@@ -34,12 +35,12 @@ async function processWebhook(data) {
         try {
             switch (data.origin) {
                 case "overseer":
-                    messageContent = `${data.event}\n${data.subject}\n${data.image}`;
+                    const messageContent = `${data.event || ''}\n${data.subject || ''}\n${data.image || ''}`.trim();
                     await pingChannels(matchingChannelIds, messageContent);
                     break;
                 case undefined:
                     console.log("Received an undefined origin.");
-                    const report = await generateWebhookReport(data);
+                    const report = await generateWebhookReport(JSON.stringify(data));
                     await sendChunkedMessages(matchingChannelIds, [report]);
                     break;
             }
@@ -49,19 +50,7 @@ async function processWebhook(data) {
     } else {
         console.log(`No subscription found for origin: ${data.origin}`);
 
-        if (data.origin) {
-            try {
-                const newSubscription = new WebhookSubs({
-                    origin: data.origin,
-                    channelId: 666,  // default channelId
-                });
-
-                await newSubscription.save();
-                console.log(`Added a default subscription for origin: ${data.origin}`);
-            } catch (error) {
-                console.error(`Error saving new subscription: ${error}`);
-            }
-        }
+        return { delivered: 0 };
     }
 }
 
@@ -107,8 +96,7 @@ async function pingChannels(matchingChannelIds, message) {
                 console.error(`Channel with ID ${channelId} does not exist.`);
                 continue;
             }
-            await channel.send({ content: message, flags: require('discord.js').MessageFlags.SuppressEmbeds });
-            console.log(`Sent a ping in channel ${channelId}: ${message}`);
+            await channel.send({ content: sanitizeMessage(message), flags: require('discord.js').MessageFlags.SuppressEmbeds, allowedMentions: SAFE_ALLOWED_MENTIONS });
         } catch (error) {
             console.error(`Error pinging everyone in channel ${channelId}: ${error}`);
         }

@@ -23,7 +23,7 @@ const UserFactsSchema = new Schema({
   userId: { type: String, required: true },
   username: { type: String, required: true },
   serverId: { type: String, required: true },
-  enabled: { type: Boolean, default: true }, // per-user per-server opt-out
+  enabled: { type: Boolean, default: false }, // explicit per-user per-server opt-in
   facts: { type: [UserFactSchema], default: [] }
 }, { timestamps: true, collection: 'userFacts' });
 

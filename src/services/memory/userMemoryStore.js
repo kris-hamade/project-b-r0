@@ -1,4 +1,5 @@
 const UserFacts = require('../../models/userFacts');
+const { isMemoryEnabledByDefault } = require('../../utils/config');
 
 function normalizeText(text) {
   return (text || '').toLowerCase().trim();
@@ -16,11 +17,10 @@ function extractPreferenceSubject(factText) {
 async function getOrCreateDoc(userId, username, serverId) {
   let doc = await UserFacts.findOne({ userId, serverId });
   if (!doc) {
-    doc = new UserFacts({ userId, username, serverId, enabled: true, facts: [] });
+    doc = new UserFacts({ userId, username, serverId, enabled: isMemoryEnabledByDefault(), facts: [] });
     await doc.save();
   } else if (doc.enabled === undefined || doc.enabled === null) {
-    // Ensure existing documents default to enabled if not explicitly set
-    doc.enabled = true;
+    doc.enabled = isMemoryEnabledByDefault();
     await doc.save();
   }
   return doc;
@@ -28,10 +28,8 @@ async function getOrCreateDoc(userId, username, serverId) {
 
 async function isMemoryEnabled(userId, serverId) {
   const doc = await UserFacts.findOne({ userId, serverId });
-  // Default to true if no document exists, or if enabled is undefined/null
-  if (!doc) return true;
-  // If enabled is explicitly false, respect that; otherwise default to true
-  return doc.enabled !== false;
+  if (!doc) return isMemoryEnabledByDefault();
+  return doc.enabled === true;
 }
 
 async function setMemoryEnabled(userId, username, serverId, enabled) {

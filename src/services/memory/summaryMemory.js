@@ -24,16 +24,15 @@ async function updateSummary(userId, username, serverId, previousSummary, userMe
     `Return only the updated summary text.`;
 
   const response = await openai.chat.completions.create({
-    model: process.env.SUMMARY_MODEL || 'gpt-4o-mini',
+    model: process.env.SUMMARY_MODEL || 'gpt-5.6-luna',
     messages: [
       { role: 'system', content: 'You create compact summaries for ongoing conversations.' },
       { role: 'user', content: prompt },
     ],
-    temperature: 0.2,
     max_completion_tokens: 300
   });
 
-  const summary = (response.choices?.[0]?.message?.content || '').trim().slice(0, 600);
+  const summary = (response.choices?.[0]?.message?.content || '').trim().slice(0, 500);
   const doc = await getOrCreate(userId, username, serverId);
   doc.summary = summary;
   doc.updatedAt = new Date();

@@ -3,6 +3,7 @@ const AZURE_VISION_KEY = process.env.AZURE_VISION_KEY;
 
 async function getImageDescription(imageUrl) {
     try {
+        if (!AZURE_VISION_ENDPOINT || !AZURE_VISION_KEY) return null;
         const url = new URL(`${AZURE_VISION_ENDPOINT}/computervision/imageanalysis:analyze`);
         url.searchParams.set('visualFeatures', 'Categories');
         url.searchParams.set('details', 'Landmarks');
@@ -20,7 +21,8 @@ async function getImageDescription(imageUrl) {
             },
             body: JSON.stringify({
                 url: imageUrl
-            })
+            }),
+            signal: AbortSignal.timeout(Number(process.env.VISION_TIMEOUT_MS) || 15000)
         });
 
         if (!response.ok) {
@@ -50,13 +52,10 @@ function transformResponse(response) {
     } = response;
 
     // Extract caption details
-    const caption = {
-        text: captionResult.text,
-        confidence: captionResult.confidence
-    };
+    const caption = captionResult ? { text: captionResult.text, confidence: captionResult.confidence } : null;
 
     // Extract object details
-    const objects = objectsResult.values.flatMap(obj => {
+    const objects = (objectsResult?.values || []).flatMap(obj => {
         return obj.tags.map(tag => {
             return {
                 name: tag.name,
@@ -66,7 +65,7 @@ function transformResponse(response) {
     });
 
     // Extract dense captions
-    const denseCaptions = denseCaptionsResult.values.map(caption => {
+    const denseCaptions = (denseCaptionsResult?.values || []).map(caption => {
         return {
             text: caption.text,
             confidence: caption.confidence
@@ -74,7 +73,7 @@ function transformResponse(response) {
     });
 
     // Extract tags
-    const tags = tagsResult.values.map(tag => {
+    const tags = (tagsResult?.values || []).map(tag => {
         // Adjust the returned structure based on actual tag properties.
         return {
             name: tag.name,
@@ -93,7 +92,6 @@ function transformResponse(response) {
         tags: tags,
         readContent: readContent
     };
-    console.log("Transformed data:", result);
     return result;
 }
 

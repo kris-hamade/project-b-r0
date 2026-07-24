@@ -11,7 +11,7 @@ const tagger = new BrillPOSTagger(lexicon, rules);
 const Roll20Data = require('../models/roll20Data'); // assuming you save the schema in a file called roll20Data.js
 
 async function loadCustomNouns() {
-  const customNounsFile = path.join(".", "src", "utils", "data-misc", "custom-nouns.txt");
+  const customNounsFile = path.join(__dirname, "data-misc", "custom-nouns.txt");
   const customNouns = fs.readFileSync(customNounsFile, "utf8").trim().split(/\s+/);
   return customNouns.map(noun => noun.toLowerCase());
 }
@@ -20,23 +20,17 @@ function isCustomToken(token, customNouns) {
   return customNouns.some(customNoun => customNoun.toLowerCase() === token.toLowerCase());
 }
 
-async function preprocessUserInput(input, nickname, channelId) {
+async function preprocessUserInput(input, nickname, channelId, guildId, userId = null) {
   const customNouns = await loadCustomNouns();
   const data = {};
 
-  const userConfig = await getChatConfig(nickname, channelId);
+  const userConfig = await getChatConfig(nickname, channelId, userId, guildId);
 
   const relevantTags = ["N", "NN", "NNS", "NNP", "NNPS"];
 
   const tokenizer = new natural.WordTokenizer();
 
-  const stopWordsFile = path.join(
-    ".",
-    "src",
-    "utils",
-    "data-misc",
-    "stop-words.txt"
-  );
+  const stopWordsFile = path.join(__dirname, "data-misc", "stop-words.txt");
   const stopWords = fs.readFileSync(stopWordsFile, "utf8").trim().split(/\s+/);
 
   function preprocess(userInput, nickname) { 
@@ -52,8 +46,6 @@ async function preprocessUserInput(input, nickname, channelId) {
 
     const taggedTokens = tagger.tag(tokens).taggedWords;
 
-    console.log("Tagged tokens: ", taggedTokens);
-
     const relevantTokens = taggedTokens
       .filter(
         (token) =>
@@ -61,7 +53,6 @@ async function preprocessUserInput(input, nickname, channelId) {
           isCustomToken(token.token, customNouns)
       )
       .map((token) => token.token);
-    console.log("Noun tokens: ", relevantTokens);
     return relevantTokens;
   }
 
@@ -79,9 +70,7 @@ async function preprocessUserInput(input, nickname, channelId) {
     let stemmedTokens = tokens.map((token) =>
       stemmer.stem(token.toLowerCase())
     );
-    console.log("Stemmed tokens: ", stemmedTokens);
-
-    const allDocs = await Roll20Data.find({});
+    const allDocs = await Roll20Data.find({ guildId });
 
     allDocs.forEach((doc) => {
       // Stem the words in the Name and Bio fields
@@ -138,8 +127,6 @@ async function preprocessUserInput(input, nickname, channelId) {
   const userInput = input;
   const tokens = preprocess(userInput, nickname);
   const relevantDocs = await search_data(tokens, data);
-
-  console.log(relevantDocs);
 
   return relevantDocs;
 }

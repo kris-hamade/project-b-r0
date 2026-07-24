@@ -34,7 +34,7 @@ function buildSystemPrompt(classification, currentPersonality = null) {
 
   // Add sensitivity-aware instructions
   if (classification.sensitivity === "high") {
-    context += " The user content may be emotionally sensitive or high-risk. Respond with empathy, avoid giving medical or legal advice, encourage seeking real-world support, and provide general supportive guidance.";
+    context += " The user content may be emotionally sensitive or high-risk. Respond with empathy, do not diagnose or claim to provide professional care, encourage appropriate real-world support, and if there may be immediate danger encourage contacting local emergency services or a local crisis line.";
   } else if (classification.sensitivity === "medium") {
     context += " The user may be experiencing emotional difficulty. Respond with understanding and kindness.";
   }

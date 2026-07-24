@@ -17,20 +17,25 @@ const {
   getUserAllowedModels,
   getConfigInformation,
   getUptime,
+  getDiscordToken,
 } = require("../utils/config");
 const { getChatConfig, setChatConfig } = require("./chatConfig");
 const {
+  createEvent,
   deleteEvent,
+  formatEvent,
   loadJobsFromDatabase,
+  parseUserDate,
+  setEventEnabled,
+  updateEvent,
 } = require("../utils/eventScheduler");
 const ScheduledEvent = require("../models/scheduledEvent");
 const moment = require("moment-timezone");
-const cronstrue = require("cronstrue");
 const Personas = require("../models/personas");
 const { getImageDescription } = require("../imaging/vision");
 const WebhookSubs = require("../models/webhookSub");
 const { loadWebhookSubs } = require("../utils/webhook");
-const { DiceRoll } = require("@dice-roller/rpg-dice-roller");
+const { rollDice } = require("../utils/dice");
 const { initEntropyEngine, createDiceRng } = require("../utils/entropyEngine");
 const { classifyMessage } = require("../services/classifierClient");
 const { buildSystemPrompt, buildUserPrompt } = require("../prompting/promptBuilder");
@@ -58,30 +63,25 @@ const {
 } = require("../services/memory/userMemoryStore");
 const { extractFactsFromMessage } = require("../services/memory/factExtractor");
 const { getSummary, updateSummary } = require("../services/memory/summaryMemory");
+const UserFacts = require("../models/userFacts");
+const UserSummary = require("../models/userSummary");
+const ChatConfig = require("../models/chatConfig");
+const SirModeConfig = require("../models/sirModeConfig");
+const { armSirMode, loadSirModes, stopSirMode } = require("../utils/sirMode");
+const {
+  SAFE_ALLOWED_MENTIONS,
+  sanitizeMessage,
+  splitDiscordMessage,
+  requireGuildManager,
+} = require("../utils/security");
 
 // Include the required packages for slash commands
 const { REST } = require("@discordjs/rest");
-const { Routes } = require("discord-api-types/v9");
+const { Routes } = require("discord-api-types/v10");
 
-const requiredUserTags = ["valon0022", "therazorpony", "teknowmusic", "fatedknight", "wars5187"]; // Discord usernames (not full tag)
-let requiredUsers = []; // Will be populated with user IDs on ready
-
-const activeSirModeIntervals = new Map(); // key = channelId, value = intervalId
-
-client.once("ready", async () => {
-  const allGuilds = await client.guilds.fetch();
-
-  for (const [guildId] of allGuilds) {
-    const guild = await client.guilds.fetch(guildId);
-    const members = await guild.members.fetch();
-
-    requiredUsers = members
-      .filter((member) => requiredUserTags.includes(member.user.username))
-      .map((member) => member.user.id);
-
-    console.log("Resolved required users:", requiredUsers);
-  }
-});
+const responseRateLimits = new Map();
+const responseModeCooldowns = new Map();
+const imageCooldowns = new Map();
 
 async function handleMessage(message) {
   let nickname = message.guild
@@ -91,6 +91,8 @@ async function handleMessage(message) {
     : message.author.username;
   let username = message.author.username;
   let channelId = message.channel.id;
+  let responseModeName = "mention";
+  let responseModeConfig = null;
   
   // Check if bot is directly @mentioned or if message is a reply to the bot (available throughout function)
   // IMPORTANT: When @everyone is used, Discord includes ALL users in mentions, so we need to check
@@ -140,7 +142,7 @@ async function handleMessage(message) {
       const ChatConfig = require("../models/chatConfig");
       // Check for mental health flag in any channel config for this user
       const config = await ChatConfig.findOne({ 
-        username, 
+        userId: message.author.id,
         needsMentalHealthCheckIn: true 
       });
       
@@ -151,7 +153,7 @@ async function handleMessage(message) {
         
         if (wantsToStop) {
           // User wants to stop receiving check-in messages
-          await clearMentalHealthCheckInFlag(username);
+          await clearMentalHealthCheckInFlag(message.author.id);
           
           // Also disable mental health check-ins for this user
           await UserMentalHealthSettings.findOneAndUpdate(
@@ -176,7 +178,7 @@ async function handleMessage(message) {
             'No DnD Data Found',
             username,
             persona.name,
-            'gpt-4o-mini',
+            'gpt-5.6-luna',
             0.7,
             null,
             `dm_${message.author.id}`,
@@ -194,7 +196,7 @@ async function handleMessage(message) {
         } else if (isOkay && confidence >= 0.6) {
           // User seems okay, clear the flag
           console.log(`[MentalHealth] User ${username} indicated they're okay (confidence: ${confidence}), clearing flag...`);
-          const cleared = await clearMentalHealthCheckInFlag(username);
+          const cleared = await clearMentalHealthCheckInFlag(message.author.id);
           
           if (cleared) {
             console.log(`[MentalHealth] Successfully cleared check-in flag for ${username}`);
@@ -213,7 +215,7 @@ async function handleMessage(message) {
             'No DnD Data Found',
             username,
             persona.name,
-            'gpt-4o-mini',
+            'gpt-5.6-luna',
             0.7,
             null,
             `dm_${message.author.id}`,
@@ -240,7 +242,7 @@ async function handleMessage(message) {
             'No DnD Data Found',
             username,
             persona.name,
-            'gpt-4o-mini',
+            'gpt-5.6-luna',
             0.7,
             null,
             `dm_${message.author.id}`,
@@ -304,7 +306,9 @@ async function handleMessage(message) {
     let respondWithoutMention = false;
     try {
       const responseMode = await ChannelResponseMode.findOne({ channelId: message.channel.id });
-      respondWithoutMention = responseMode?.respondWithoutMention ?? false; // Default to false (off)
+      responseModeConfig = responseMode;
+      responseModeName = responseMode?.mode || (responseMode?.respondWithoutMention ? "smart" : "mention");
+      respondWithoutMention = responseModeName !== "mention";
       
       console.log(`[ResponseMode] Channel setting: respondWithoutMention=${respondWithoutMention}, botMentioned=${botMentioned}`);
     } catch (error) {
@@ -336,6 +340,16 @@ async function handleMessage(message) {
     if (botMentioned && otherUsersMentioned.size > 0) {
       console.log(`[Bot] Bot is @mentioned along with other users, responding anyway`);
     }
+  }
+
+  const rateKey = `${message.guild?.id || 'dm'}:${message.author.id}`;
+  const nowMs = Date.now();
+  const responseLimit = Number(process.env.DISCORD_RESPONSES_PER_MINUTE) || 10;
+  const rate = responseRateLimits.get(rateKey);
+  if (!rate || rate.resetAt <= nowMs) responseRateLimits.set(rateKey, { count: 1, resetAt: nowMs + 60_000 });
+  else if (++rate.count > responseLimit) {
+    if (botMentioned) await message.reply({ content: "I'm handling a lot right now—please try again in a moment.", allowedMentions: SAFE_ALLOWED_MENTIONS });
+    return;
   }
 
   // ============================ Classifier Integration =============================
@@ -441,14 +455,14 @@ async function handleMessage(message) {
     // ============================ End Mental Health Check-In Detection =============================
 
     // Check if we should respond based on classifier
-    const confidenceThreshold = getClassifierConfidenceThreshold();
+    const confidenceThreshold = responseModeConfig?.confidenceThreshold ?? getClassifierConfidenceThreshold();
     
     // If bot is directly @mentioned, always respond (bypass classifier decision)
     // But still use classification data for web search and other features
     if (botMentioned) {
       console.log(`[Bot] Direct @mention detected, bypassing classifier decision and responding`);
       // Continue to generate response - skip classifier check, but keep classification for features
-    } else if (!classification.shouldRespond || classification.confidence < confidenceThreshold) {
+    } else if (responseModeName !== "always" && (!classification.shouldRespond || classification.confidence < confidenceThreshold)) {
       console.log(`[Classifier] Skipping response: ${classification.reason} (confidence: ${classification.confidence})`);
       return; // Don't respond - classifier says we shouldn't
     }
@@ -492,13 +506,20 @@ async function handleMessage(message) {
   }
   // ============================ End Classifier Integration =============================
 
+  if (!botMentioned && responseModeName !== "mention") {
+    const cooldownMs = (responseModeConfig?.cooldownSeconds ?? 15) * 1000;
+    const lastResponse = responseModeCooldowns.get(channelId) || 0;
+    if (Date.now() - lastResponse < cooldownMs) return;
+    responseModeCooldowns.set(channelId, Date.now());
+  }
+
   // ============================ Image Processing =============================
   let imageDescription;
   let imgUrl = "";
 
   // If there's an attachment with a URL
   if (message.attachments.size > 0 && message.attachments.first().url) {
-    console.log(`processing ${message.attachments.first().url}`);
+    console.log('Processing an image attachment');
     imgUrl = message.attachments.first().url;
     imageDescription = await getImageDescription(
       message.attachments.first().url
@@ -511,7 +532,7 @@ async function handleMessage(message) {
   const imgUrlPattern = /https?:\/\/[^ "]+\.(?:png|jpg|jpeg|gif)/; // Adjust this regex pattern as needed
   if (imgUrlPattern.test(message.content)) {
     imgUrl = message.content.match(imgUrlPattern)[0];
-    console.log(`processing ${imgUrl}`);
+    console.log('Processing an image URL');
     imageDescription = await getImageDescription(imgUrl);
     //imageDescription = imageFullDescription.denseCaptions.join(", ");
     //console.log(imageDescription);
@@ -523,8 +544,8 @@ async function handleMessage(message) {
 
   // Get the user's config from the database
   // Ensure config exists for the user and channel before fetching it.
-  await setChatConfig(username, {}, channelId); // Pass an empty config, because your function will set defaults if not found
-  let userConfig = await getChatConfig(username, channelId);
+  await setChatConfig(username, {}, channelId, message.author.id, message.guild?.id || null);
+  let userConfig = await getChatConfig(username, channelId, message.author.id, message.guild?.id || null);
 
   // Fetch the persona details based on the current personality in user's chat config
   let currentPersonality = await Personas.findOne({
@@ -544,7 +565,7 @@ async function handleMessage(message) {
   // ============================ Pre-Response Quality Check =============================
   // Double-check with LLM if we should actually respond (quality/timing check)
   // Skip quality check if bot is directly @mentioned (always respond to direct mentions)
-  if (classification && shouldUseClassifier && !botMentioned) {
+  if (classification && shouldUseClassifier && !botMentioned && responseModeName !== "always") {
     try {
       const channelName = message.channel instanceof Discord.DMChannel 
         ? 'dm' 
@@ -555,7 +576,7 @@ async function handleMessage(message) {
         classification,
         recentMessages,
         channelName,
-        'gpt-4o-mini' // Use cheaper model for this check
+        'gpt-5.6-luna'
       );
 
       console.log(`[QualityCheck] Result:`, {
@@ -580,7 +601,6 @@ async function handleMessage(message) {
   // Show as typing in the discord channel - ONLY NOW that we've confirmed we're responding
   message.channel.sendTyping();
 
-  console.log("THIS CURRENT PERSONALITY", currentPersonality);
   // Preprocess Message and Return Data from our DnD Journal / Sessions
   // Also sends user nickname to retrieve data about their character
   let dndData;
@@ -589,7 +609,7 @@ async function handleMessage(message) {
     currentPersonality.type == "dnd" &&
     !imageDescription
   ) {
-    dndData = await preprocessUserInput(message.content, nickname, channelId);
+    dndData = await preprocessUserInput(message.content, nickname, channelId, message.guild?.id, message.author.id);
   } else {
     dndData = "No DnD Data Found";
   }
@@ -640,7 +660,8 @@ async function handleMessage(message) {
         channelId,
         classification, // Pass classification to enhance prompts
         recentMessages, // Pass recent messages for conversation context
-        extraSystemContext // Memory facts context
+        extraSystemContext, // Memory facts context
+        { userId: message.author.id, guildId: message.guild?.id }
       );
     }
 
@@ -660,22 +681,23 @@ async function handleMessage(message) {
     // Build History for Storage and Retrieval (skip for mental health responses in channels)
     // Mental health conversations should only happen in DMs, not in channel history
     if (!isMentalHealthResponse || message.channel instanceof Discord.DMChannel) {
-      buildHistory(
+      await Promise.all([buildHistory(
         "user",
         nickname,
         message.content,
         nickname,
         channelId,
-        imgUrl
-      );
-      buildHistory(
+        imgUrl,
+        { userId: message.author.id, guildId: message.guild?.id }
+      ), buildHistory(
         "assistant",
         currentPersonality.name,
         responseText,
         nickname,
         channelId,
-        imgUrl
-      );
+        imgUrl,
+        { userId: message.author.id, guildId: message.guild?.id }
+      )]);
     } else {
       console.log(`[MentalHealth] Skipping history save for high-sensitivity response in channel ${channelId} to prevent future mental health references`);
     }
@@ -686,19 +708,19 @@ async function handleMessage(message) {
     
     const MAX_MESSAGE_LENGTH = 2000;
     if (responseText.length > MAX_MESSAGE_LENGTH) {
-      let messageChunks = splitIntoChunks(responseText, MAX_MESSAGE_LENGTH);
+      let messageChunks = splitDiscordMessage(responseText, MAX_MESSAGE_LENGTH);
       for (const chunk of messageChunks) {
         await message.channel.send({ 
           content: sanitizeMessage(chunk), 
           flags: Discord.MessageFlags.SuppressEmbeds,
-          allowedMentions: { parse: [] } // Disable ALL mentions including @everyone
+          allowedMentions: SAFE_ALLOWED_MENTIONS
         });
       }
     } else {
       await message.channel.send({ 
         content: responseText, 
         flags: Discord.MessageFlags.SuppressEmbeds,
-        allowedMentions: { parse: [] } // Disable ALL mentions including @everyone
+        allowedMentions: SAFE_ALLOWED_MENTIONS
       });
     }
 
@@ -769,6 +791,11 @@ function startSirMode(interaction, textChannel, checkTime, interval) {
     }
 
     // Start tracking missing users
+    const requiredUsers = requiredUsersByGuild.get(interaction.guildId) || [];
+    if (!requiredUsers.length) {
+      textChannel.send({ content: "Sir mode has no configured required users for this server.", allowedMentions: SAFE_ALLOWED_MENTIONS });
+      return;
+    }
     let missingUsers = new Set(requiredUsers.filter(id => !currentVoiceChannel.members.has(id)));
 
     // Don't ping the user who initiated if they're present
@@ -801,7 +828,7 @@ function startSirMode(interaction, textChannel, checkTime, interval) {
       } else {
         // Ping only the users still missing
         for (const userId of missingUsers) {
-          textChannel.send(`<@${userId}> SIR! You're not in the voice channel!`);
+          textChannel.send({ content: `<@${userId}> SIR! You're not in the voice channel!`, allowedMentions: { users: [userId], parse: [] } });
         }
       }
     }, interval);
@@ -920,31 +947,57 @@ const commands = [
   },
   {
     name: "forgetme",
-    description: "Clear your chat history",
+    description: "Permanently clear your data in this server",
+    options: [{ name: "confirm", type: 5, description: "Confirm permanent deletion", required: true }],
   },
   {
     name: "forgetall",
-    description: "Clear all chat history",
+    description: "Clear all chat history for this server (admins only)",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
+    options: [{ name: "confirm", type: 5, description: "Confirm permanent deletion", required: true }],
   },
   {
     name: "events",
-    description: "List all scheduled events",
+    description: "List upcoming and paused scheduled events",
   },
   {
     name: "schedule",
-    description: "Schedule an Event",
+    description: "Create and manage events and reminders",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
     options: [
       {
-        name: "event",
-        type: 3, // Discord's ApplicationCommandOptionType for STRING
-        description: "Event name, date, time, and frequency of reminder",
-        required: true,
+        name: "create", description: "Create an event with repeat and reminder controls", type: 1,
+        options: [
+          { name: "name", type: 3, description: "Event name", required: true },
+          { name: "when", type: 3, description: "tomorrow 7:30 PM or 2026-08-14 19:30", required: true },
+          { name: "recurrence", type: 3, description: "How often it repeats", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
+          { name: "reminders", type: 3, description: "Advance reminders, e.g. 1d,2h,15m", required: false },
+          { name: "timezone", type: 3, description: "IANA timezone", required: false },
+        ],
       },
+      { name: "quick", description: "Create from natural language", type: 1, options: [{ name: "event", type: 3, description: "e.g. Game every two weeks Friday at 7 PM, remind 1d and 1h", required: true }] },
+      {
+        name: "edit", description: "Change an existing event", type: 1,
+        options: [
+          { name: "event", type: 3, description: "Current event name", required: true },
+          { name: "name", type: 3, description: "New name", required: false },
+          { name: "when", type: 3, description: "New date/time", required: false },
+          { name: "recurrence", type: 3, description: "New repeat setting", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
+          { name: "reminders", type: 3, description: "Replace reminders, e.g. 1d,1h", required: false },
+          { name: "timezone", type: 3, description: "New IANA timezone", required: false },
+        ],
+      },
+      { name: "pause", description: "Pause an event and its reminders", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true }] },
+      { name: "resume", description: "Resume a paused future event", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true }] },
+      { name: "delete", description: "Delete an event", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true }] },
+      { name: "list", description: "List scheduled events", type: 1 },
+      { name: "help", description: "Show scheduling examples", type: 1 },
     ],
   },
   {
     name: "deleteevent",
     description: "Delete a scheduled event",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
     options: [
       {
         name: "event",
@@ -988,6 +1041,7 @@ const commands = [
   {
     name: "checkin",
     description: "Configure automatic check-in messages for inactive channels",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
     options: [
       {
         name: "enable",
@@ -1028,28 +1082,37 @@ const commands = [
   },
   {
     name: "responsemode",
-    description: "Control whether the bot responds without being @mentioned",
+    description: "Control how naturally the bot participates in this channel",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
     options: [
       {
         name: "enable",
-        description: "Enable responding without @mention (bot will respond based on classifier)",
+        description: "Enable smart participation with safe defaults",
         type: 1, // SUB_COMMAND
       },
       {
         name: "disable",
-        description: "Disable responding without @mention (bot only responds when @mentioned)",
+        description: "Require an @mention or reply",
         type: 1, // SUB_COMMAND
       },
       {
         name: "status",
-        description: "View current response mode for this channel",
+        description: "View behavior and limits for this channel",
         type: 1, // SUB_COMMAND
       },
+      { name: "configure", description: "Choose behavior, cooldown, and confidence", type: 1, options: [
+        { name: "mode", type: 3, description: "mention, smart, or always", required: true, choices: [
+          { name: "Mention only", value: "mention" }, { name: "Smart participation", value: "smart" }, { name: "Always respond", value: "always" },
+        ] },
+        { name: "cooldown_seconds", type: 4, description: "Minimum seconds between unprompted replies (0-3600)", required: false, min_value: 0, max_value: 3600 },
+        { name: "confidence", type: 10, description: "Smart-mode classifier threshold (0-1)", required: false, min_value: 0, max_value: 1 },
+      ] },
     ],
   },
   {
     name: "webhook",
     description: "Subscribe to or unsubscribe from a webhook for the channel",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
     options: [
       {
         name: "list",
@@ -1088,15 +1151,19 @@ const commands = [
   },
   {
     name: "sirmode",
-    description:
-      "Activate sir mode at a specified time when required users are in the voice channel",
+    description: "Manage bounded voice-channel attendance reminders",
+    default_member_permissions: Discord.PermissionsBitField.Flags.ManageGuild.toString(),
     options: [
-      {
-        name: "time",
-        type: 3,
-        description: "Time to start sir mode (e.g., 9pm)",
-        required: true,
-      },
+      { name: "start", description: "Start or schedule Sir Mode for your voice channel", type: 1, options: [
+        { name: "when", type: 3, description: "Optional start time; blank starts now", required: false },
+        { name: "interval_minutes", type: 4, description: "Minutes between reminders (1-60)", required: false, min_value: 1, max_value: 60 },
+        { name: "max_reminders", type: 4, description: "Stop after this many reminders (1-20)", required: false, min_value: 1, max_value: 20 },
+        { name: "message", type: 3, description: "Custom reminder text", required: false },
+      ] },
+      { name: "stop", description: "Stop active reminders", type: 1 },
+      { name: "status", description: "Show Sir Mode configuration", type: 1 },
+      { name: "adduser", description: "Add a required voice participant", type: 1, options: [{ name: "user", type: 6, description: "Required participant", required: true }] },
+      { name: "removeuser", description: "Remove a required participant", type: 1, options: [{ name: "user", type: 6, description: "Participant to remove", required: true }] },
     ],
   },
   {
@@ -1105,12 +1172,19 @@ const commands = [
   },
   {
     name: "mentalhealthcheckin",
-    description: "Toggle mental health DM check-ins on or off (default: off)",
+    description: "Manage private, opt-in supportive check-ins",
     options: [
       {
         name: "enable",
-        description: "Enable mental health DM check-ins",
+        description: "Enable private check-ins with consent controls",
         type: 1, // SUB_COMMAND
+        options: [
+          { name: "cadence_hours", type: 4, description: "Minimum hours between DMs (6-168)", required: false, min_value: 6, max_value: 168 },
+          { name: "timezone", type: 3, description: "IANA timezone", required: false },
+          { name: "quiet_start", type: 3, description: "Quiet hours start, HH:mm", required: false },
+          { name: "quiet_end", type: 3, description: "Quiet hours end, HH:mm", required: false },
+          { name: "tone", type: 3, description: "Message style", required: false, choices: [{ name: "Gentle", value: "gentle" }, { name: "Brief", value: "brief" }] },
+        ],
       },
       {
         name: "disable",
@@ -1122,12 +1196,15 @@ const commands = [
         description: "View your current mental health check-in settings",
         type: 1, // SUB_COMMAND
       },
+      { name: "snooze", description: "Pause check-ins temporarily", type: 1, options: [{ name: "hours", type: 4, description: "Snooze duration (1-720 hours)", required: true, min_value: 1, max_value: 720 }] },
+      { name: "resume", description: "End a snooze without changing preferences", type: 1 },
+      { name: "test", description: "Send yourself one test DM now", type: 1 },
     ],
   },
 ];
 
 function start() {
-  client.on("ready", async () => {
+  client.on(Discord.Events.ClientReady, async () => {
     // Initialize entropy engine for dice rolling
     try {
       initEntropyEngine('https://pg.hamy.app', 2048);
@@ -1142,7 +1219,7 @@ function start() {
       .catch((error) => {
         console.log("Error fetching personas", error);
       });
-    let personaChoices = availablePersonas.map((persona) => ({
+    let personaChoices = (availablePersonas || []).slice(0, 25).map((persona) => ({
       name: persona.name,
       value: persona.name.toLowerCase(),
     }));
@@ -1155,8 +1232,13 @@ function start() {
 
     // Fetch the allowed models from the environment
     const allowedModels = getUserAllowedModels();
-    const modelChoices = allowedModels.map((model) => ({
-      name: model,
+    const modelLabels = {
+      "gpt-5.6-sol": "GPT-5.6 Sol — highest quality",
+      "gpt-5.6-terra": "GPT-5.6 Terra — balanced",
+      "gpt-5.6-luna": "GPT-5.6 Luna — fastest / lowest cost",
+    };
+    const modelChoices = allowedModels.slice(0, 25).map((model) => ({
+      name: (modelLabels[model] || model).slice(0, 100),
       value: model,
     }));
 
@@ -1175,7 +1257,7 @@ function start() {
     const uniqueOrigins = new Set(
       availableWebhooks.map((webhook) => webhook.origin)
     );
-    const webhookChoices = Array.from(uniqueOrigins).map((origin) => ({
+    const webhookChoices = Array.from(uniqueOrigins).slice(0, 25).map((origin) => ({
       name: origin,
       value: origin.toLowerCase(),
     }));
@@ -1203,9 +1285,11 @@ function start() {
     // Database Loading
     // Load Scheduled Events from Database
     loadJobsFromDatabase(client);
+    loadSirModes(client);
 
     // Slash command registration
-    const rest = new REST({ version: "9" }).setToken(process.env.DISCORD_TOKEN);
+    const discordToken = getDiscordToken();
+    const rest = new REST({ version: "10" }).setToken(discordToken);
 
     try {
       console.log("Started refreshing application (/) commands.");
@@ -1230,6 +1314,9 @@ function start() {
       if (!interaction.isCommand()) return;
 
       const { commandName } = interaction;
+
+      const managerCommands = new Set(["forgetall", "schedule", "deleteevent", "checkin", "responsemode", "webhook", "sirmode", "endsirmode"]);
+      if (managerCommands.has(commandName) && !(await requireGuildManager(interaction))) return;
 
       switch (commandName) {
         case "memory": {
@@ -1282,7 +1369,8 @@ function start() {
               await interaction.reply({ content: `✅ Forgotten ${count} fact(s).`, ephemeral: true });
             } else if (sub === "clear") {
               const count = await clearAllFacts(userId, serverId);
-              await interaction.reply({ content: `✅ Cleared ${count} fact(s).`, ephemeral: true });
+              await UserSummary.deleteOne({ userId, serverId });
+              await interaction.reply({ content: `Cleared ${count} fact(s) and your conversation summary.`, ephemeral: true });
             }
           } catch (err) {
             console.error('[Memory] Command error:', err);
@@ -1319,13 +1407,17 @@ function start() {
             if (foundPersona) {
               userConfig = await getChatConfig(
                 interaction.user.username,
-                interaction.channelId
+                interaction.channelId,
+                interaction.user.id,
+                interaction.guildId
               );
               userConfig.currentPersonality = selectedPersonaName;
-              setChatConfig(
+              await setChatConfig(
                 interaction.user.username,
                 userConfig,
-                interaction.channelId
+                interaction.channelId,
+                interaction.user.id,
+                interaction.guildId
               );
               await interaction.reply(
                 `Switched to persona ${selectedPersonaName}.`
@@ -1346,8 +1438,13 @@ function start() {
 
             // Reply with the list of models
             if (allowedModels.length > 0) {
+              const descriptions = {
+                "gpt-5.6-sol": "highest quality for difficult reasoning and rich campaign work",
+                "gpt-5.6-terra": "recommended balance of intelligence, speed, and cost",
+                "gpt-5.6-luna": "fastest and most economical for everyday chat",
+              };
               await interaction.reply(
-                `Available GPT models are: ${allowedModels.join(", ")}`
+                `**Available models**\n${allowedModels.map(model => `- **${model}** — ${descriptions[model] || "custom configured model"}`).join("\n")}\n\nYour current model: **${userConfig.model}**`
               );
             } else {
               await interaction.reply(`No GPT models available.`);
@@ -1361,13 +1458,17 @@ function start() {
             if (allowedModels.includes(selectedModelName)) {
               userConfig = await getChatConfig(
                 interaction.user.username,
-                interaction.channelId
+                interaction.channelId,
+                interaction.user.id,
+                interaction.guildId
               );
               userConfig.model = selectedModelName;
-              setChatConfig(
+              await setChatConfig(
                 interaction.user.username,
                 userConfig,
-                interaction.channelId
+                interaction.channelId,
+                interaction.user.id,
+                interaction.guildId
               );
               await interaction.reply(
                 `Switched to GPT model ${selectedModelName}.`
@@ -1387,7 +1488,9 @@ function start() {
           const newTemp = interaction.options.getNumber("value");
           userConfig = await getChatConfig(
             interaction.user.username,
-            interaction.channelId
+            interaction.channelId,
+            interaction.user.id,
+            interaction.guildId
           );
 
           if (userConfig) {
@@ -1399,10 +1502,12 @@ function start() {
               // Update the user's config with the new temperature
               userConfig.temperature = temperature;
               // Save the updated config
-              setChatConfig(
+              await setChatConfig(
                 interaction.user.username,
                 userConfig,
-                interaction.channelId
+                interaction.channelId,
+                interaction.user.id,
+                interaction.guildId
               );
               await interaction.reply(`Set GPT temperature to ${newTemp}.`);
             } else {
@@ -1427,7 +1532,9 @@ function start() {
         case "about": {
           userConfig = await getChatConfig(
             interaction.user.username,
-            interaction.channelId
+            interaction.channelId,
+            interaction.user.id,
+            interaction.guildId
           );
           const configInfo = getConfigInformation(
             userConfig.model,
@@ -1438,124 +1545,89 @@ function start() {
         }
 
         case "forgetme": {
-          const user = interaction.user.username;
-          console.log("forgetme", interaction.channelId);
-          clearUsersHistory(user, interaction.channelId)
-            .then(() => {
-              interaction.reply(`--Memory of ${user} Erased--`);
-            })
-            .catch((err) => {
-              interaction.reply(`Unable to erase memory of ${user}`);
-            });
+          if (!interaction.guildId || !interaction.options.getBoolean("confirm")) {
+            await interaction.reply({ content: "Deletion was not confirmed.", ephemeral: true });
+            break;
+          }
+          const userId = interaction.user.id;
+          const guildId = interaction.guildId;
+          const channelIds = [...interaction.guild.channels.cache.keys()];
+          const deletedHistory = await clearUsersHistory({ userId, nickname: interaction.user.username, guildId, channelIds });
+          await Promise.all([
+            UserFacts.deleteOne({ userId, serverId: guildId }),
+            UserSummary.deleteOne({ userId, serverId: guildId }),
+            ChatConfig.deleteMany({
+              $and: [
+                { $or: [{ userId }, { username: interaction.user.username }] },
+                { $or: [{ guildId }, { channelID: { $in: channelIds } }] },
+              ],
+            }),
+          ]);
+          await interaction.reply({ content: `Your stored data for this server was deleted (${deletedHistory} history records).`, ephemeral: true });
           break;
         }
 
         case "forgetall": {
-          clearAllHistory()
-            .then(() => {
-              interaction.reply("-- Memory Erased --");
-            })
-            .catch((err) => {
-              interaction.reply("Unable to erase memory");
-            });
+          if (!interaction.options.getBoolean("confirm")) {
+            await interaction.reply({ content: "Deletion was not confirmed.", ephemeral: true });
+            break;
+          }
+          const deleted = await clearAllHistory(interaction.guildId, [...interaction.guild.channels.cache.keys()]);
+          await interaction.reply({ content: `Deleted ${deleted} chat-history records for this server.`, ephemeral: true });
           break;
         }
 
         case "sirmode": {
-          const voiceState = interaction.member.voice;
-
-          if (!voiceState || !voiceState.channelId) {
-            await interaction.reply(
-              "You must be in a voice channel to use this command."
+          const subCommand = interaction.options.getSubcommand();
+          if (subCommand === "adduser" || subCommand === "removeuser") {
+            const user = interaction.options.getUser("user");
+            const operation = subCommand === "adduser" ? { $addToSet: { requiredUserIds: user.id } } : { $pull: { requiredUserIds: user.id } };
+            await SirModeConfig.findOneAndUpdate(
+              { guildId: interaction.guildId },
+              { ...operation, $setOnInsert: { textChannelId: interaction.channelId, voiceChannelId: interaction.member.voice?.channelId || interaction.channelId } },
+              { upsert: true, new: true },
             );
-            return;
-          }
-
-          const voiceChannel = client.channels.cache.get(voiceState.channelId);
-          if (!voiceChannel) {
-            await interaction.reply("Could not find your voice channel.");
-            return;
-          }
-
-          const timeParam = interaction.options.getString("time");
-          let checkMoment = moment(timeParam, ["hA", "h:mmA", "H:mm"], true);
-
-          if (!checkMoment.isValid()) {
-            await interaction.reply(
-              "Invalid time format. Please use a format like '9pm' or '21:00'."
+            await interaction.reply({ content: `${subCommand === "adduser" ? "Added" : "Removed"} ${user.username} ${subCommand === "adduser" ? "to" : "from"} Sir Mode.`, ephemeral: true });
+          } else if (subCommand === "start") {
+            if (!interaction.member.voice?.channelId) {
+              await interaction.reply({ content: "Join the voice channel you want Sir Mode to monitor first.", ephemeral: true });
+              break;
+            }
+            const existing = await SirModeConfig.findOne({ guildId: interaction.guildId });
+            const when = interaction.options.getString("when");
+            const timezone = process.env.DEFAULT_TIMEZONE || "America/New_York";
+            const startsAt = when ? parseUserDate(when, timezone) : new Date(Date.now() + 1000);
+            const requiredUserIds = existing?.requiredUserIds?.length ? existing.requiredUserIds : [interaction.user.id];
+            const config = await SirModeConfig.findOneAndUpdate(
+              { guildId: interaction.guildId },
+              { guildId: interaction.guildId, textChannelId: interaction.channelId, voiceChannelId: interaction.member.voice.channelId, requiredUserIds, active: true, startsAt, remindersSent: 0, intervalMinutes: interaction.options.getInteger("interval_minutes") || existing?.intervalMinutes || 5, maxReminders: interaction.options.getInteger("max_reminders") || existing?.maxReminders || 3, message: interaction.options.getString("message") || existing?.message || "SIR! Game time—please join the voice channel.", updatedBy: interaction.user.id },
+              { upsert: true, new: true },
             );
-            return;
+            await armSirMode(config, client);
+            await interaction.reply(`✅ Sir Mode armed for <#${config.voiceChannelId}> at <t:${Math.floor(config.startsAt.getTime() / 1000)}:F>. It will send at most ${config.maxReminders} reminder(s), ${config.intervalMinutes} minute(s) apart.`);
+          } else if (subCommand === "stop") {
+            const stopped = await stopSirMode(interaction.guildId);
+            await interaction.reply(stopped ? "Sir Mode stopped." : "Sir Mode has not been configured.");
+          } else {
+            const config = await SirModeConfig.findOne({ guildId: interaction.guildId });
+            await interaction.reply(config ? `**Sir Mode**\nStatus: ${config.active ? "active" : "stopped"}\nVoice channel: <#${config.voiceChannelId}>\nRequired users: ${config.requiredUserIds.map(id => `<@${id}>`).join(", ") || "none"}\nInterval: ${config.intervalMinutes}m · Limit: ${config.maxReminders} · Sent: ${config.remindersSent}` : "Sir Mode has not been configured. Add required users, then use `/sirmode start`.");
           }
-
-          const now = moment();
-          checkMoment.set({
-            year: now.year(),
-            month: now.month(),
-            date: now.date(),
-            second: 0,
-            millisecond: 0,
-          });
-
-          if (checkMoment.isBefore(now)) {
-            checkMoment.add(1, "day");
-          }
-
-          const checkTime = checkMoment.toDate();
-          const interval = 10000; // 1 minute
-
-          startSirMode(interaction, interaction.channel, checkTime, interval);
-          await interaction.reply(
-            `Sir mode activated and will start at ${checkMoment.format(
-              "h:mm A"
-            )}.`
-          );
           break;
         }
 
         case "endsirmode": {
-          const channelId = interaction.channelId;
-
-          if (activeSirModeIntervals.has(channelId)) {
-            clearInterval(activeSirModeIntervals.get(channelId));
-            activeSirModeIntervals.delete(channelId);
-            await interaction.reply("Sir mode ended early.");
-          } else {
-            await interaction.reply("Sir mode is not active in this channel.");
-          }
+          const stopped = await stopSirMode(interaction.guildId);
+          await interaction.reply(stopped ? "Sir Mode stopped." : "Sir Mode has not been configured.");
           break;
         }
 
         case "events": {
           try {
-            const events = await ScheduledEvent.find({});
-            console.log("Fetched events:", events);
+            const events = await ScheduledEvent.find({ guildId: interaction.guildId, status: { $in: ["active", "paused"] } }).sort({ startsAt: 1 });
             if (events.length === 0) {
               await interaction.reply("No events are currently scheduled.");
             } else {
-              let eventList = "Scheduled Events:\n";
-              events.forEach((event) => {
-                const eventTime = moment.tz(event.time, event.timezone);
-                const formattedEventTime = eventTime.format(
-                  "MMMM D, YYYY [at] h:mm A"
-                );
-                const humanReadableFrequency = cronstrue.toString(
-                  event.frequency
-                );
-                const now = moment();
-                const duration = moment.duration(eventTime.diff(now));
-                const timeRemaining = [
-                  duration.years() > 0 ? duration.years() + " years" : null,
-                  duration.days() > 0 ? duration.days() + " days" : null,
-                  duration.hours() > 0 ? duration.hours() + " hours" : null,
-                  duration.minutes() > 0
-                    ? duration.minutes() + " minutes"
-                    : null,
-                ]
-                  .filter(Boolean)
-                  .join(", ");
-                eventList += `- **${event.eventName}** on ${formattedEventTime} (Timezone: ${event.timezone}, Frequency: ${humanReadableFrequency}, Time Remaining: ${timeRemaining})\n`;
-              });
-              await interaction.reply(eventList);
+              await interaction.reply(events.map(formatEvent).join("\n\n"));
             }
           } catch (error) {
             console.error(`Error fetching events: ${error}`);
@@ -1567,14 +1639,30 @@ function start() {
         }
 
         case "schedule": {
-          const event = interaction.options.getString("event");
-          interaction.reply("Generating Event Data: " + event);
-          const reply = await generateEventData(
-            event,
-            interaction.channelId,
-            client
-          );
-          await interaction.followUp(reply);
+          const subCommand = interaction.options.getSubcommand();
+          await interaction.deferReply({ ephemeral: true });
+          if (subCommand === "help") {
+            await interaction.editReply("**Scheduling examples**\n- `/schedule create name:Game Night when:tomorrow 7:30 PM recurrence:biweekly reminders:1d,2h,15m`\n- `/schedule quick event:Game Night every two weeks Friday at 7 PM, remind me 1 day and 1 hour before`\n- Use `edit`, `pause`, `resume`, or `delete` with the exact event name.");
+          } else if (subCommand === "list") {
+            const events = await ScheduledEvent.find({ guildId: interaction.guildId, status: { $in: ["active", "paused"] } }).sort({ startsAt: 1 });
+            await interaction.editReply(events.length ? events.map(formatEvent).join("\n\n") : "No active or paused events.");
+          } else if (subCommand === "quick") {
+            const reply = await generateEventData(interaction.options.getString("event"), interaction.channelId, client, { guildId: interaction.guildId, creatorId: interaction.user.id });
+            await interaction.editReply(reply ? `✅ Scheduled\n${reply}` : "I couldn't understand that schedule. Try `/schedule help`.");
+          } else if (subCommand === "create") {
+            const timezone = interaction.options.getString("timezone") || process.env.DEFAULT_TIMEZONE || "America/New_York";
+            const event = await createEvent({ eventName: interaction.options.getString("name"), startsAt: parseUserDate(interaction.options.getString("when"), timezone), recurrence: interaction.options.getString("recurrence") || "once", reminders: interaction.options.getString("reminders") || "1d,1h", timezone, channelId: interaction.channelId, guildId: interaction.guildId, creatorId: interaction.user.id }, client);
+            await interaction.editReply(`✅ Scheduled\n${formatEvent(event)}`);
+          } else if (subCommand === "edit") {
+            const event = await updateEvent(interaction.options.getString("event"), interaction.guildId, { eventName: interaction.options.getString("name"), when: interaction.options.getString("when"), recurrence: interaction.options.getString("recurrence"), reminders: interaction.options.getString("reminders"), timezone: interaction.options.getString("timezone") });
+            await interaction.editReply(event ? `✅ Updated\n${formatEvent(event)}` : "Event not found. Use `/schedule list` to check its exact name.");
+          } else if (subCommand === "pause" || subCommand === "resume") {
+            const event = await setEventEnabled(interaction.options.getString("event"), interaction.guildId, subCommand === "resume");
+            await interaction.editReply(event ? `✅ ${subCommand === "resume" ? "Resumed" : "Paused"}\n${formatEvent(event)}` : "Event not found.");
+          } else if (subCommand === "delete") {
+            const deleted = await deleteEvent(interaction.options.getString("event"), interaction.guildId);
+            await interaction.editReply(deleted ? "Event and all of its reminders were deleted." : "Event not found.");
+          }
           break;
         }
         case "deleteevent": {
@@ -1584,7 +1672,7 @@ function start() {
             return;
           }
           try {
-            const result = await deleteEvent(eventName.toLowerCase());
+            const result = await deleteEvent(eventName.toLowerCase(), interaction.guildId);
             if (result) {
               await interaction.reply(
                 `Event with Name ${eventName} has been deleted.`
@@ -1609,41 +1697,47 @@ function start() {
             // Use custom entropy engine for dice rolling
             // The dice-roller library accepts an options object with an rng property
             const customRng = createDiceRng();
-            const roll = new DiceRoll(dice, { rng: customRng });
-            const expandedRoll = roll.output.split(" =")[0];
+            const roll = rollDice(dice, customRng);
 
             await interaction.reply(
-              `**You Rolled ${roll.total}**: (${expandedRoll})`
+              `**You Rolled ${roll.total}**: (${roll.expanded})`
             );
           } catch (error) {
             console.error('[DiceRoll] Error with custom RNG, falling back to default:', error);
-            // Fallback to default RNG if custom RNG fails
-            const roll = new DiceRoll(dice);
-            const expandedRoll = roll.output.split(" =")[0];
-            await interaction.reply(
-              `**You Rolled ${roll.total}**: (${expandedRoll})`
-            );
+            await interaction.reply({ content: error.message || "Invalid dice notation.", ephemeral: true });
           }
           break;
         }
 
         case "image": {
           try {
+            const cooldownMs = Number(process.env.IMAGE_COOLDOWN_MS) || 120000;
+            const previous = imageCooldowns.get(interaction.user.id) || 0;
+            if (Date.now() - previous < cooldownMs) {
+              await interaction.reply({ content: "Please wait before generating another image.", ephemeral: true });
+              break;
+            }
+            imageCooldowns.set(interaction.user.id, Date.now());
             await interaction.deferReply();
             const description = interaction.options.getString("description");
 
             // Generate the image(s) and get base64 strings
-            const { imageBase64, eta } = await generateImage(description);
+          const { imageBase64, eta } = await generateImage(description);
+
+            if (!imageBase64.length || eta < 0) {
+              await interaction.editReply("Image generation failed. Please try again later.");
+              break;
+            }
 
             // Add a delay if there's an ETA provided
-            setTimeout(() => {
+            setTimeout(async () => {
               // Convert base64 strings to buffers and create attachments
               const attachments = imageBase64.map((b64, idx) =>
                 new Discord.AttachmentBuilder(Buffer.from(b64, "base64"))
                   .setName(`image_${idx + 1}.png`)
                   .setDescription("Generated image")
               );
-              interaction.followUp({
+              await interaction.editReply({
                 content: description,
                 files: attachments,
               });
@@ -1662,6 +1756,9 @@ function start() {
           const channelId = interaction.channelId;
 
           if (subCommand === "list") {
+            const subscriptions = await WebhookSubs.find({ guildId: interaction.guildId, channelId }).sort({ origin: 1 });
+            const names = subscriptions.map(sub => sub.origin);
+            await interaction.reply({ content: names.length ? `Subscribed webhooks: ${names.join(", ")}` : "This channel has no webhook subscriptions.", ephemeral: true });
           } else if (subCommand === "subscribe") {
             const selectedWebhookName = interaction.options
               .getString("name")
@@ -1671,6 +1768,7 @@ function start() {
             const alreadySubscribed = await WebhookSubs.findOne({
               origin: selectedWebhookName,
               channelId: channelId,
+              guildId: interaction.guildId,
             });
             if (alreadySubscribed) {
               await interaction.reply(
@@ -1683,6 +1781,7 @@ function start() {
             const newSubscription = new WebhookSubs({
               origin: selectedWebhookName,
               channelId: channelId,
+              guildId: interaction.guildId,
             });
 
             await newSubscription.save();
@@ -1697,6 +1796,7 @@ function start() {
             const foundWebhook = await WebhookSubs.findOne({
               origin: webhookToUnsubscribe,
               channelId: channelId,
+              guildId: interaction.guildId,
             });
 
             if (foundWebhook) {
@@ -1735,6 +1835,7 @@ function start() {
                 { channelId },
                 {
                   enabled: true,
+                  guildId: interaction.guildId,
                   inactivityDays,
                   checkInTime,
                   timezone,
@@ -1806,7 +1907,7 @@ function start() {
             try {
               const responseMode = await ChannelResponseMode.findOneAndUpdate(
                 { channelId },
-                { respondWithoutMention: true },
+                { respondWithoutMention: true, mode: "smart", guildId: interaction.guildId, updatedBy: interaction.user.id },
                 { upsert: true, new: true }
               );
 
@@ -1822,7 +1923,7 @@ function start() {
             try {
               const responseMode = await ChannelResponseMode.findOneAndUpdate(
                 { channelId },
-                { respondWithoutMention: false },
+                { respondWithoutMention: false, mode: "mention", guildId: interaction.guildId, updatedBy: interaction.user.id },
                 { upsert: true, new: true }
               );
 
@@ -1834,13 +1935,26 @@ function start() {
               console.error(`[ResponseMode] Error disabling response mode:`, error);
               await interaction.reply("An error occurred while disabling response mode.");
             }
+          } else if (subCommand === "configure") {
+            const mode = interaction.options.getString("mode");
+            const update = { mode, respondWithoutMention: mode !== "mention", guildId: interaction.guildId, updatedBy: interaction.user.id };
+            const cooldown = interaction.options.getInteger("cooldown_seconds");
+            const confidence = interaction.options.getNumber("confidence");
+            if (cooldown !== null) update.cooldownSeconds = cooldown;
+            if (confidence !== null) update.confidenceThreshold = confidence;
+            const config = await ChannelResponseMode.findOneAndUpdate({ channelId }, update, { upsert: true, new: true });
+            await interaction.reply(`✅ Response mode set to **${config.mode}**.\nCooldown: ${config.cooldownSeconds}s · Smart confidence: ${config.confidenceThreshold}`);
           } else if (subCommand === "status") {
             try {
               const responseMode = await ChannelResponseMode.findOne({ channelId });
               const respondWithoutMention = responseMode?.respondWithoutMention ?? false;
+              const mode = responseMode?.mode || (respondWithoutMention ? "smart" : "mention");
 
               const statusMessage = 
                 `**Response Mode Configuration:**\n` +
+                `- Mode: **${mode}**\n` +
+                `- Cooldown: ${responseMode?.cooldownSeconds ?? 15}s\n` +
+                `- Smart confidence: ${responseMode?.confidenceThreshold ?? getClassifierConfidenceThreshold()}\n` +
                 `- Respond without @mention: ${respondWithoutMention ? '✅ Enabled' : '❌ Disabled (default)'}\n` +
                 (respondWithoutMention 
                   ? `The bot will respond based on the classifier's decision.\n`
@@ -1862,12 +1976,26 @@ function start() {
 
           if (subCommand === "enable") {
             try {
+              const timezone = interaction.options.getString("timezone") || "America/New_York";
+              const quietStart = interaction.options.getString("quiet_start") || "22:00";
+              const quietEnd = interaction.options.getString("quiet_end") || "08:00";
+              if (!moment.tz.zone(timezone) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(quietStart) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(quietEnd)) {
+                await interaction.reply({ content: "Use a valid IANA timezone and HH:mm quiet-hour values.", ephemeral: true });
+                break;
+              }
               await UserMentalHealthSettings.findOneAndUpdate(
                 { userId },
                 { 
                   userId,
                   username,
-                  mentalHealthCheckInsEnabled: true 
+                  mentalHealthCheckInsEnabled: true,
+                  cadenceHours: interaction.options.getInteger("cadence_hours") || 24,
+                  timezone,
+                  quietStart,
+                  quietEnd,
+                  tone: interaction.options.getString("tone") || "gentle",
+                  consentedAt: new Date(),
+                  snoozedUntil: null,
                 },
                 { upsert: true, new: true }
               );
@@ -1898,7 +2026,7 @@ function start() {
               );
 
               // Also clear any pending check-in flags for this user
-              await clearMentalHealthCheckInFlag(username);
+              await clearMentalHealthCheckInFlag(userId);
 
               await interaction.reply({
                 content: `✅ Mental health DM check-ins disabled.\n` +
@@ -1913,13 +2041,28 @@ function start() {
                 ephemeral: true
               });
             }
+          } else if (subCommand === "snooze") {
+            const hours = interaction.options.getInteger("hours");
+            const settings = await UserMentalHealthSettings.findOneAndUpdate({ userId, mentalHealthCheckInsEnabled: true }, { snoozedUntil: new Date(Date.now() + hours * 3600000) }, { new: true });
+            await interaction.reply({ content: settings ? `Check-ins snoozed until <t:${Math.floor(settings.snoozedUntil.getTime() / 1000)}:F>.` : "Enable check-ins before snoozing them.", ephemeral: true });
+          } else if (subCommand === "resume") {
+            await UserMentalHealthSettings.findOneAndUpdate({ userId }, { $unset: { snoozedUntil: 1 } });
+            await interaction.reply({ content: "Check-in snooze cleared. Your existing preferences are unchanged.", ephemeral: true });
+          } else if (subCommand === "test") {
+            const { sendMentalHealthCheckInDM } = require("../utils/mentalHealthCheckIn");
+            const result = await sendMentalHealthCheckInDM(userId, client, { force: true });
+            await interaction.reply({ content: result.sent ? "Test DM sent." : `Test DM not sent: ${result.reason}.`, ephemeral: true });
           } else if (subCommand === "status") {
             try {
               const settings = await UserMentalHealthSettings.findOne({ userId });
               const isEnabled = settings?.mentalHealthCheckInsEnabled ?? false;
+              const details = isEnabled
+                ? `- Minimum cadence: ${settings.cadenceHours} hours\n- Quiet hours: ${settings.quietStart}–${settings.quietEnd} (${settings.timezone})\n- Tone: ${settings.tone}\n- Snoozed until: ${settings.snoozedUntil ? `<t:${Math.floor(settings.snoozedUntil.getTime() / 1000)}:F>` : "not snoozed"}\n`
+                : "";
 
               const statusMessage = 
                 `**Mental Health Check-In Settings:**\n` +
+                details +
                 `- Status: ${isEnabled ? '✅ Enabled' : '❌ Disabled (default)'}\n` +
                 (isEnabled 
                   ? `The bot will send you caring DMs when it detects you may be struggling.\n`
@@ -1945,51 +2088,26 @@ function start() {
           await interaction.reply("Unknown command");
       }
     } catch (error) {
-      console.log(`Error handling command: ${error}`);
+      console.error(`Error handling command ${interaction.commandName}:`, error.message);
+      const payload = { content: "That command couldn't be completed. Please try again.", ephemeral: true };
+      try {
+        if (interaction.deferred) await interaction.editReply(payload);
+        else if (interaction.replied) await interaction.followUp(payload);
+        else await interaction.reply(payload);
+      } catch (replyError) {
+        console.error('Unable to send command error response:', replyError.message);
+      }
     }
   });
 
   client.on("messageCreate", handleMessage);
 
   console.log("Attempting to log in to Discord...");
-  client
-    .login(process.env.DISCORD_TOKEN)
-    .then(() => console.log(`Logged in as ${client.user.tag}`))
-    .catch((err) => {
-      console.error("Error during client login:", err);
-      process.exit(1); // Exit if login fails
-    });
-}
-
-/**
- * Sanitizes message content to prevent @everyone and @here mentions
- * @param {string} text - The text to sanitize
- * @returns {string} Sanitized text with @everyone and @here mentions broken
- */
-function sanitizeMessage(text) {
-  if (!text) return text;
-  // Use zero-width space to break @everyone and @here mentions
-  return text.replace(/@everyone/gi, '@\u200beveryone').replace(/@here/gi, '@\u200bhere');
-}
-
-/**
- * Splits a string into chunks up to a specified max length.
- * @param {string} str - The string to split.
- * @param {number} maxLength - The maximum length of each chunk.
- * @returns {string[]} An array of string chunks.
- */
-function splitIntoChunks(str, maxLength) {
-  let chunks = [];
-  while (str.length > 0) {
-    let chunkSize = Math.min(str.length, maxLength);
-    let chunk = str.substring(0, chunkSize);
-    chunks.push(chunk);
-    // Ensure we move to the next piece of the string
-    str = str.substring(chunkSize);
-  }
-  return chunks;
+  return client.login(getDiscordToken())
+    .then(() => console.log(`Logged in as ${client.user.tag}`));
 }
 
 module.exports = {
   start,
+  commands,
 };

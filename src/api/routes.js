@@ -1,5 +1,5 @@
 const controller = require('./controllers');
-const { authMiddleware, getCurrentJournal, getCurrentHandouts } = require('./middlewares');
+const { getCurrentJournal, getCurrentHandouts } = require('./middlewares');
 
 /**
  * @typedef {Object} RouteDefinition
@@ -56,12 +56,14 @@ const routeDefinitions = [
         endpoint: '/currentJournal', 
         method: 'GET', 
         handler: getCurrentJournal,
+        requiresAuth: true,
         description: 'Get Roll20 Journal Records'
     },
     { 
         endpoint: '/currentHandouts', 
         method: 'GET', 
         handler: getCurrentHandouts,
+        requiresAuth: true,
         description: 'Get Roll20 Handout Records'
     },
     { 
@@ -78,6 +80,7 @@ const routeDefinitions = [
         method: 'POST', 
         handler: controller.webhookHandler,
         requiresAuth: true,
+        authType: 'webhook',
         description: 'Webhook handler'
     },
 ];

@@ -32,9 +32,6 @@ function getClassifierApiUrl() {
 const CLASSIFIER_API_URL = getClassifierApiUrl();
 const CLASSIFIER_TIMEOUT = parseInt(process.env.CLASSIFIER_TIMEOUT, 10) || 5000; // 5 seconds default
 
-// Log the configured URL on module load (for debugging)
-console.log(`[ClassifierClient] Configured classifier API URL: ${CLASSIFIER_API_URL}`);
-
 /**
  * Classify a message using the classifier API
  * @param {Object} payload - Classification request payload
@@ -59,6 +56,7 @@ async function classifyMessage(payload) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(process.env.CLASSIFIER_API_KEY && { Authorization: `Bearer ${process.env.CLASSIFIER_API_KEY}` }),
       },
       body: JSON.stringify({
         message: payload.message,

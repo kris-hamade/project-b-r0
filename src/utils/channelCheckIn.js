@@ -4,6 +4,7 @@ const Discord = require('discord.js');
 const ChannelCheckIn = require('../models/channelCheckIn');
 const { generateResponse } = require('../openai/gpt');
 const Personas = require('../models/personas');
+const { SAFE_ALLOWED_MENTIONS, sanitizeMessage } = require('./security');
 
 /**
  * Check if a channel should receive a check-in message
@@ -21,8 +22,8 @@ async function shouldCheckIn(channelId, client) {
 
     // Check if we already checked in today
     if (config.lastCheckIn) {
-      const lastCheckIn = moment(config.lastCheckIn);
-      const today = moment().startOf('day');
+      const lastCheckIn = moment(config.lastCheckIn).tz(config.timezone || 'America/New_York');
+      const today = moment.tz(config.timezone || 'America/New_York').startOf('day');
       if (lastCheckIn.isSameOrAfter(today)) {
         return { shouldCheckIn: false, reason: 'Already checked in today' };
       }
@@ -34,7 +35,7 @@ async function shouldCheckIn(channelId, client) {
     }
 
     // Get messages from the last few days
-    const cutoffDate = moment().subtract(config.inactivityDays || 1, 'days');
+    const cutoffDate = moment.tz(config.timezone || 'America/New_York').subtract(config.inactivityDays || 1, 'days');
     const messages = await channel.messages.fetch({ limit: 100 });
     
     // Filter to messages from the last N days (excluding bot messages)
@@ -45,7 +46,7 @@ async function shouldCheckIn(channelId, client) {
       });
 
     // Check if channel was active in the past few days but not today
-    const today = moment().startOf('day');
+    const today = moment.tz(config.timezone || 'America/New_York').startOf('day');
     const messagesToday = recentMessages.filter(msg => 
       moment(msg.createdAt).isSameOrAfter(today)
     );
@@ -127,7 +128,7 @@ async function sendCheckIn(channelId, client) {
       'No DnD Data Found',
       'Channel',
       defaultPersona.name,
-      'gpt-4o-mini', // Use cheaper model for check-ins
+      'gpt-5.6-luna',
       0.7,
       null,
       channelId,
@@ -135,7 +136,7 @@ async function sendCheckIn(channelId, client) {
       recentMessages.slice(-5) // Recent context
     );
 
-    await channel.send({ content: checkInMessage, flags: Discord.MessageFlags.SuppressEmbeds });
+    await channel.send({ content: sanitizeMessage(checkInMessage), flags: Discord.MessageFlags.SuppressEmbeds, allowedMentions: SAFE_ALLOWED_MENTIONS });
     
     // Update last check-in time
     config.lastCheckIn = new Date();
@@ -152,8 +153,8 @@ async function sendCheckIn(channelId, client) {
  * @param {Discord.Client} client - Discord client
  */
 function initializeCheckInScheduler(client) {
-  // Run check-in check every hour at the top of the hour
-  schedule.scheduleJob('0 * * * *', async () => {
+  // Check every minute so configured HH:mm values are honored.
+  schedule.scheduleJob('* * * * *', async () => {
     try {
       const enabledCheckIns = await ChannelCheckIn.find({ enabled: true });
       console.log(`[CheckIn] Checking ${enabledCheckIns.length} enabled channels for check-ins`);
@@ -167,8 +168,7 @@ function initializeCheckInScheduler(client) {
           const [hours, minutes] = checkInTimeStr.split(':').map(Number);
           const checkInTime = moment.tz(timezone).hour(hours).minute(minutes).second(0);
           
-          // Only check if current hour matches the check-in hour
-          if (now.hour() === checkInTime.hour()) {
+          if (now.hour() === checkInTime.hour() && now.minute() === checkInTime.minute()) {
             const checkInResult = await shouldCheckIn(config.channelId, client);
             if (checkInResult.shouldCheckIn) {
               console.log(`[CheckIn] Triggering check-in for channel ${config.channelId}: ${checkInResult.reason}`);
@@ -186,7 +186,7 @@ function initializeCheckInScheduler(client) {
     }
   });
   
-  console.log('[CheckIn] Scheduled check-in job initialized (runs every hour at :00)');
+  console.log('[CheckIn] Scheduled check-in job initialized');
 }
 
 module.exports = {
