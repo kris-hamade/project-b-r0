@@ -4,6 +4,12 @@
 .env.*
 !.env.example
 .npm-cache
+.npm
+.pnpm-store
+.yarn
+.turbo
+.parcel-cache
+.cache
 node_modules
 coverage
 tests

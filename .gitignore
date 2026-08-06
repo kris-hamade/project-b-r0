@@ -48,7 +48,15 @@ typings/
 *.tsbuildinfo
 
 # Optional npm cache directory
-.npm
+.npm/
+.npm-cache/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.turbo/
+.parcel-cache/
 
 # Optional eslint cache
 .eslintcache
@@ -64,10 +72,17 @@ typings/
 
 # dotenv environment variables file
 .env
-.env.test
+.env.*
+!.env.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
+
+# Editor and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
 # next.js build output
 .next

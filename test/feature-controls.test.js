@@ -12,6 +12,7 @@ test('current model catalog includes all GPT-5.6 user tiers', () => {
 
 test('parses friendly advance reminder offsets', () => {
   assert.deepEqual(parseReminderOffsets('15m,1d,2h,1d'), [1440, 120, 15]);
+  assert.deepEqual(parseReminderOffsets('none'), []);
   assert.throws(() => parseReminderOffsets('sometime'), /Invalid reminder/);
 });
 

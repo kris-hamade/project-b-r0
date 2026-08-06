@@ -1,5 +1,6 @@
 const openai = require('../../openai/openAi');
 const UserSummary = require('../../models/userSummary');
+const { getWorkloadConfig } = require('../../openai/modelRouting');
 
 async function getOrCreate(userId, username, serverId) {
   let doc = await UserSummary.findOne({ userId, serverId });
@@ -23,16 +24,19 @@ async function updateSummary(userId, username, serverId, previousSummary, userMe
     `Latest messages:\nUSER: ${userMessage}\nASSISTANT: ${assistantReply}\n\n` +
     `Return only the updated summary text.`;
 
-  const response = await openai.chat.completions.create({
-    model: process.env.SUMMARY_MODEL || 'gpt-5.6-luna',
-    messages: [
-      { role: 'system', content: 'You create compact summaries for ongoing conversations.' },
+  const route = getWorkloadConfig('summary');
+  const response = await openai.responses.create({
+    ...route,
+    input: [
+      { role: 'developer', content: 'Create compact, privacy-aware summaries for ongoing conversations. Return only summary text.' },
       { role: 'user', content: prompt },
     ],
-    max_completion_tokens: 300
+    text: { verbosity: 'low' },
+    max_output_tokens: 300,
+    store: false,
   });
 
-  const summary = (response.choices?.[0]?.message?.content || '').trim().slice(0, 500);
+  const summary = (response.output_text || '').trim().slice(0, 500);
   const doc = await getOrCreate(userId, username, serverId);
   doc.summary = summary;
   doc.updatedAt = new Date();

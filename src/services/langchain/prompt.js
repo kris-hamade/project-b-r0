@@ -1,12 +1,5 @@
-const { loadCore } = require('./index');
-
 async function buildBaseSystemMessages({ currentDate, currentDateTime, currentYear, personaText }) {
-  const { PromptTemplate } = await loadCore();
-
-  const dateTpl = PromptTemplate.fromTemplate(
-    'The current date is {currentDate} ({currentYear}). Today is {currentDateTime}. Always use this date when answering questions about dates, time, or current events. Do not use the model\'s training date or any other date.'
-  );
-  const dateContent = await dateTpl.format({ currentDate, currentDateTime, currentYear });
+  const dateContent = `The current date is ${currentDate} (${currentYear}). Today is ${currentDateTime}. Always use this date when answering questions about dates, time, or current events. Do not use the model's training date or any other date.`;
 
   const guidelines = `IMPORTANT: You are responding in Discord, which does NOT support markdown tables or charts. When presenting data:
 - Use simple text lists with bullet points or numbered lists

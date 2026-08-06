@@ -26,6 +26,7 @@ Copy-Item .env.example .env
 npm ci
 npm run check
 npm test
+npm run smoke:openai
 npm run start:test
 ```
 
@@ -40,7 +41,8 @@ Non-production runs automatically prefer `DISCORD_TESTING_TOKEN`. Production use
 - `/memory status|enable|disable|list|forget|clear`
 - `/roll dice:2d6+1d4-2`
 - `/image generate`
-- `/schedule create|quick|edit|pause|resume|delete|list|help`
+- `/schedule manage` — private visual picker with Edit, Pause/Resume, and confirmed Delete controls
+- `/schedule create|quick|edit|pause|resume|delete|list|help` — event-name fields autocomplete as you type
 - Scheduling supports once, daily, weekly, every-two-weeks, and monthly recurrence plus advance reminders such as `1d,2h,15m`.
 - `/checkin enable|disable|status`
 - `/responsemode enable|disable|configure|status` — mention-only, smart, or always modes with cooldown and confidence controls
@@ -88,4 +90,6 @@ CI runs syntax checks, tests, a production dependency audit, and the Docker buil
 - `src/models`: server- and user-scoped MongoDB documents
 - `src/utils`: scheduling, privacy, security, dice, and check-in helpers
 
-The default conversational model is GPT-5.6 Terra, GPT-5.6 Luna handles cost-sensitive background work, native Responses API web search handles current questions, and GPT Image 2 handles image generation. All can be overridden through environment variables.
+The default conversational model is GPT-5.6 Terra. GPT-5.6 Luna handles narrow, latency-sensitive background work such as schedule extraction, response checks, facts, and summaries. GPT-5.6 Sol remains selectable for the hardest user-facing reasoning. Webhook reports and image analysis use Terra; GPT Image 2 handles image generation.
+
+All OpenAI text workloads use the Responses API. Scheduling, response decisions, and fact extraction use strict Structured Outputs backed by Zod schemas instead of best-effort JSON mode. Model and reasoning-effort routes can be overridden independently in `.env`; see `.env.example` for the complete matrix.

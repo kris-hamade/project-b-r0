@@ -23,11 +23,14 @@ const { getChatConfig, setChatConfig } = require("./chatConfig");
 const {
   createEvent,
   deleteEvent,
+  deleteEventById,
   formatEvent,
   loadJobsFromDatabase,
   parseUserDate,
   setEventEnabled,
+  setEventEnabledById,
   updateEvent,
+  updateEventById,
 } = require("../utils/eventScheduler");
 const ScheduledEvent = require("../models/scheduledEvent");
 const moment = require("moment-timezone");
@@ -979,7 +982,7 @@ const commands = [
       {
         name: "edit", description: "Change an existing event", type: 1,
         options: [
-          { name: "event", type: 3, description: "Current event name", required: true },
+          { name: "event", type: 3, description: "Current event name", required: true, autocomplete: true },
           { name: "name", type: 3, description: "New name", required: false },
           { name: "when", type: 3, description: "New date/time", required: false },
           { name: "recurrence", type: 3, description: "New repeat setting", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
@@ -987,9 +990,10 @@ const commands = [
           { name: "timezone", type: 3, description: "New IANA timezone", required: false },
         ],
       },
-      { name: "pause", description: "Pause an event and its reminders", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true }] },
-      { name: "resume", description: "Resume a paused future event", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true }] },
-      { name: "delete", description: "Delete an event", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true }] },
+      { name: "pause", description: "Pause an event and its reminders", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true, autocomplete: true }] },
+      { name: "resume", description: "Resume a paused future event", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true, autocomplete: true }] },
+      { name: "delete", description: "Delete an event", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true, autocomplete: true }] },
+      { name: "manage", description: "Open an interactive event editor", type: 1 },
       { name: "list", description: "List scheduled events", type: 1 },
       { name: "help", description: "Show scheduling examples", type: 1 },
     ],
@@ -1004,6 +1008,7 @@ const commands = [
         type: 3, // Discord's ApplicationCommandOptionType for STRING
         description: "The name of the event you want to delete",
         required: true,
+        autocomplete: true,
       },
     ],
   },
@@ -1203,6 +1208,84 @@ const commands = [
   },
 ];
 
+function eventReminderText(event) {
+  const values = event.reminderMinutes || [];
+  return values.map((minutes) => {
+    if (minutes % 10080 === 0) return `${minutes / 10080}w`;
+    if (minutes % 1440 === 0) return `${minutes / 1440}d`;
+    if (minutes % 60 === 0) return `${minutes / 60}h`;
+    return `${minutes}m`;
+  }).join(", ");
+}
+
+async function buildEventManager(guildId, selectedId = null) {
+  const events = await ScheduledEvent.find({
+    guildId,
+    status: { $in: ["active", "paused"] },
+  }).sort({ startsAt: 1 }).limit(25);
+
+  if (!events.length) {
+    return {
+      content: "No active or paused events. Use `/schedule create` or `/schedule quick` to add one.",
+      components: [],
+    };
+  }
+
+  const selected = events.find(event => String(event._id) === String(selectedId));
+  const select = new Discord.StringSelectMenuBuilder()
+    .setCustomId("event_manager_select")
+    .setPlaceholder("Choose an event to manage")
+    .addOptions(events.map(event => ({
+      label: event.eventName.slice(0, 100),
+      description: `${event.status} · ${moment(event.startsAt).tz(event.timezone).format("MMM D, YYYY h:mm A")}`.slice(0, 100),
+      value: String(event._id),
+      default: selected ? String(event._id) === String(selected._id) : false,
+    })));
+
+  const components = [new Discord.ActionRowBuilder().addComponents(select)];
+  let content = "**Event Manager**\nChoose an event below.";
+
+  if (selected) {
+    content = `**Event Manager**\n${formatEvent(selected)}`;
+    components.push(new Discord.ActionRowBuilder().addComponents(
+      new Discord.ButtonBuilder().setCustomId(`event_edit:${selected._id}`).setLabel("Edit").setStyle(Discord.ButtonStyle.Primary).setEmoji("✏️"),
+      new Discord.ButtonBuilder().setCustomId(`event_toggle:${selected._id}`).setLabel(selected.status === "paused" ? "Resume" : "Pause").setStyle(Discord.ButtonStyle.Secondary),
+      new Discord.ButtonBuilder().setCustomId(`event_delete:${selected._id}`).setLabel("Delete").setStyle(Discord.ButtonStyle.Danger).setEmoji("🗑️"),
+    ));
+  }
+
+  return { content, components };
+}
+
+async function getManagedEvent(interaction, id) {
+  if (!interaction.guildId) return null;
+  return ScheduledEvent.findOne({ _id: id, guildId: interaction.guildId });
+}
+
+function eventEditModal(event) {
+  const modal = new Discord.ModalBuilder()
+    .setCustomId(`event_edit_modal:${event._id}`)
+    .setTitle(`Edit ${event.eventName}`.slice(0, 45));
+
+  const fields = [
+    ["event_name", "Event name", event.eventName, Discord.TextInputStyle.Short],
+    ["event_when", "Date and time", moment(event.startsAt).tz(event.timezone).format("YYYY-MM-DD HH:mm"), Discord.TextInputStyle.Short],
+    ["event_recurrence", "Recurrence", event.recurrence || "once", Discord.TextInputStyle.Short],
+    ["event_reminders", "Reminders", eventReminderText(event) || "none", Discord.TextInputStyle.Short],
+    ["event_timezone", "Timezone", event.timezone || "America/New_York", Discord.TextInputStyle.Short],
+  ];
+  modal.addComponents(fields.map(([id, label, value, style]) =>
+    new Discord.ActionRowBuilder().addComponents(
+      new Discord.TextInputBuilder()
+        .setCustomId(id)
+        .setLabel(label)
+        .setStyle(style)
+        .setRequired(true)
+        .setValue(String(value).slice(0, 4000)),
+    )));
+  return modal;
+}
+
 function start() {
   client.on(Discord.Events.ClientReady, async () => {
     // Initialize entropy engine for dice rolling
@@ -1306,14 +1389,100 @@ function start() {
 
   // Handling the interaction created when a user invokes your slash command.
   client.on("interactionCreate", async (interaction) => {
-    console.log(`Received interaction: ${interaction.commandName}`);
-
     let userConfig;
 
     try {
+      if (interaction.isAutocomplete()) {
+        if (!["schedule", "deleteevent"].includes(interaction.commandName) || !interaction.guildId) {
+          await interaction.respond([]);
+          return;
+        }
+        if (!interaction.memberPermissions?.has(Discord.PermissionsBitField.Flags.ManageGuild)) {
+          await interaction.respond([]);
+          return;
+        }
+        const focused = String(interaction.options.getFocused() || "").toLowerCase();
+        const events = await ScheduledEvent.find({
+          guildId: interaction.guildId,
+          status: { $in: ["active", "paused"] },
+        }).sort({ startsAt: 1 }).limit(100).lean();
+        await interaction.respond(events
+          .filter(event => event.eventName.toLowerCase().includes(focused))
+          .slice(0, 25)
+          .map(event => ({
+            name: `${event.eventName} (${event.status})`.slice(0, 100),
+            value: event.eventName.slice(0, 100),
+          })));
+        return;
+      }
+
+      const isEventComponent =
+        (interaction.isStringSelectMenu() && interaction.customId === "event_manager_select") ||
+        (interaction.isButton() && interaction.customId.startsWith("event_")) ||
+        (interaction.isModalSubmit() && interaction.customId.startsWith("event_edit_modal:"));
+
+      if (isEventComponent) {
+        if (!interaction.inGuild() || !interaction.memberPermissions?.has(Discord.PermissionsBitField.Flags.ManageGuild)) {
+          await interaction.reply({ content: "You need **Manage Server** to manage scheduled events.", ephemeral: true });
+          return;
+        }
+
+        if (interaction.isStringSelectMenu()) {
+          await interaction.update(await buildEventManager(interaction.guildId, interaction.values[0]));
+          return;
+        }
+
+        const [action, eventId] = interaction.customId.split(":");
+        const event = await getManagedEvent(interaction, eventId);
+        if (!event) {
+          const payload = { content: "That event no longer exists.", components: [] };
+          if (interaction.isModalSubmit()) await interaction.reply({ ...payload, ephemeral: true });
+          else await interaction.update(payload);
+          return;
+        }
+
+        if (action === "event_edit") {
+          await interaction.showModal(eventEditModal(event));
+        } else if (action === "event_toggle") {
+          await setEventEnabledById(event._id, interaction.guildId, event.status === "paused");
+          await interaction.update(await buildEventManager(interaction.guildId, eventId));
+        } else if (action === "event_delete") {
+          await interaction.update({
+            content: `Delete **${event.eventName}** and all of its reminders? This cannot be undone.`,
+            components: [new Discord.ActionRowBuilder().addComponents(
+              new Discord.ButtonBuilder().setCustomId(`event_confirm_delete:${event._id}`).setLabel("Yes, delete").setStyle(Discord.ButtonStyle.Danger),
+              new Discord.ButtonBuilder().setCustomId(`event_cancel_delete:${event._id}`).setLabel("Cancel").setStyle(Discord.ButtonStyle.Secondary),
+            )],
+          });
+        } else if (action === "event_confirm_delete") {
+          await deleteEventById(event._id, interaction.guildId);
+          await interaction.update(await buildEventManager(interaction.guildId));
+        } else if (action === "event_cancel_delete") {
+          await interaction.update(await buildEventManager(interaction.guildId, eventId));
+        } else if (action === "event_edit_modal") {
+          const recurrence = interaction.fields.getTextInputValue("event_recurrence").trim().toLowerCase();
+          if (!["once", "daily", "weekly", "biweekly", "monthly"].includes(recurrence)) {
+            await interaction.reply({ content: "Recurrence must be `once`, `daily`, `weekly`, `biweekly`, or `monthly`.", ephemeral: true });
+            return;
+          }
+          const updated = await updateEventById(event._id, interaction.guildId, {
+            eventName: interaction.fields.getTextInputValue("event_name"),
+            when: interaction.fields.getTextInputValue("event_when"),
+            recurrence,
+            reminders: interaction.fields.getTextInputValue("event_reminders"),
+            timezone: interaction.fields.getTextInputValue("event_timezone"),
+          });
+          const payload = await buildEventManager(interaction.guildId, updated._id);
+          if (interaction.isFromMessage()) await interaction.update(payload);
+          else await interaction.reply({ ...payload, ephemeral: true });
+        }
+        return;
+      }
+
       if (!interaction.isCommand()) return;
 
       const { commandName } = interaction;
+      console.log(`Received interaction: ${commandName}`);
 
       const managerCommands = new Set(["forgetall", "schedule", "deleteevent", "checkin", "responsemode", "webhook", "sirmode", "endsirmode"]);
       if (managerCommands.has(commandName) && !(await requireGuildManager(interaction))) return;
@@ -1642,7 +1811,9 @@ function start() {
           const subCommand = interaction.options.getSubcommand();
           await interaction.deferReply({ ephemeral: true });
           if (subCommand === "help") {
-            await interaction.editReply("**Scheduling examples**\n- `/schedule create name:Game Night when:tomorrow 7:30 PM recurrence:biweekly reminders:1d,2h,15m`\n- `/schedule quick event:Game Night every two weeks Friday at 7 PM, remind me 1 day and 1 hour before`\n- Use `edit`, `pause`, `resume`, or `delete` with the exact event name.");
+            await interaction.editReply("**Scheduling examples**\n- `/schedule manage` opens the visual event editor.\n- `/schedule create name:Game Night when:tomorrow 7:30 PM recurrence:biweekly reminders:1d,2h,15m`\n- `/schedule quick event:Game Night every two weeks Friday at 7 PM, remind me 1 day and 1 hour before`\n- Event fields also autocomplete as you type.");
+          } else if (subCommand === "manage") {
+            await interaction.editReply(await buildEventManager(interaction.guildId));
           } else if (subCommand === "list") {
             const events = await ScheduledEvent.find({ guildId: interaction.guildId, status: { $in: ["active", "paused"] } }).sort({ startsAt: 1 });
             await interaction.editReply(events.length ? events.map(formatEvent).join("\n\n") : "No active or paused events.");

@@ -24,7 +24,7 @@ test('server-mutating commands advertise Manage Server permissions', () => {
 
 test('enhanced feature command surfaces are registered', () => {
   const expected = {
-    schedule: ['create', 'quick', 'edit', 'pause', 'resume', 'delete', 'list', 'help'],
+    schedule: ['create', 'quick', 'edit', 'pause', 'resume', 'delete', 'manage', 'list', 'help'],
     responsemode: ['enable', 'disable', 'status', 'configure'],
     sirmode: ['start', 'stop', 'status', 'adduser', 'removeuser'],
     mentalhealthcheckin: ['enable', 'disable', 'status', 'snooze', 'resume', 'test'],
@@ -33,4 +33,14 @@ test('enhanced feature command surfaces are registered', () => {
     const command = commands.find(candidate => candidate.name === name);
     assert.deepEqual(command.options.map(option => option.name), subcommands);
   }
+});
+
+test('event mutation fields provide autocomplete', () => {
+  const schedule = commands.find(command => command.name === 'schedule');
+  for (const name of ['edit', 'pause', 'resume', 'delete']) {
+    const subcommand = schedule.options.find(option => option.name === name);
+    assert.equal(subcommand.options.find(option => option.name === 'event').autocomplete, true);
+  }
+  const legacyDelete = commands.find(command => command.name === 'deleteevent');
+  assert.equal(legacyDelete.options[0].autocomplete, true);
 });

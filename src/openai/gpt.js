@@ -4,6 +4,9 @@ const { scheduleEvent } = require("../utils/eventScheduler.js");
 const openai = require('./openAi');
 const moment = require('moment-timezone');
 const { buildBaseSystemMessages } = require('../services/langchain/prompt');
+const { createSafetyIdentifier, getWorkloadConfig } = require('./modelRouting');
+const { parseStructuredResponse } = require('./structuredOutput');
+const { responseCheckSchema, scheduledEventSchema } = require('./schemas');
 
 // Set the max tokens to 1/4 of the max prompt size
 //const maxTokens = maxPromptSize / 4;
@@ -97,7 +100,8 @@ async function generateResponse(
     // Determine if we should use web search (only for questions)
     const enableWebSearch = classification && classification.isQuestion && process.env.WEB_SEARCH_ENABLED === 'true';
     
-    let modelToUse = model || getGlobalGptModel();
+    const chatRoute = getWorkloadConfig('chat', model || getGlobalGptModel());
+    let modelToUse = chatRoute.model;
     if (enableWebSearch) {
       messages.push({
         role: "developer",
@@ -108,7 +112,11 @@ async function generateResponse(
     const requestParams = {
       model: modelToUse,
       input: messages,
+      reasoning: chatRoute.reasoning,
+      text: { verbosity: process.env.CHAT_VERBOSITY || 'medium' },
       max_output_tokens: getTokenLimits().chat_output_limit,
+      store: false,
+      ...(metadata.userId && { safety_identifier: createSafetyIdentifier(metadata.userId) }),
       ...(enableWebSearch && { tools: [{ type: "web_search" }] }),
     };
     if (!String(modelToUse).startsWith('gpt-5') && Number.isFinite(Number(temperature))) {
@@ -141,9 +149,12 @@ async function generateResponse(
         
         // Fallback to regular model without web search
         const fallbackParams = {
-          model: model,
+          model: modelToUse,
           input: messages.filter(message => !String(message.content).includes('Use web search when needed')),
+          reasoning: chatRoute.reasoning,
+          text: { verbosity: process.env.CHAT_VERBOSITY || 'medium' },
           max_output_tokens: getTokenLimits().chat_output_limit,
+          store: false,
         };
         
         response = await openai.responses.create(fallbackParams);
@@ -154,9 +165,12 @@ async function generateResponse(
         
         // Fallback to regular model without web search
         const fallbackParams = {
-          model: model,
+          model: modelToUse,
           input: messages.filter(message => !String(message.content).includes('Use web search when needed')),
+          reasoning: chatRoute.reasoning,
+          text: { verbosity: process.env.CHAT_VERBOSITY || 'medium' },
           max_output_tokens: getTokenLimits().chat_output_limit,
+          store: false,
         };
         
         response = await openai.responses.create(fallbackParams);
@@ -198,18 +212,16 @@ async function generateWebhookReport(message) {
   ];
 
   try {
-    const response = await openai.chat.completions.create({
-      model: process.env.WEBHOOK_REPORT_MODEL || "gpt-5.6-luna",
-      messages: messages,
-      max_completion_tokens: getTokenLimits().chat_output_limit
+    const response = await openai.responses.create({
+      ...getWorkloadConfig('webhookReport'),
+      input: messages,
+      text: { verbosity: 'medium' },
+      max_output_tokens: getTokenLimits().chat_output_limit,
+      store: false,
     });
 
-    const message = response.choices[0].message.content;
-
-    // Log the tokens used
-    console.log("Prompt tokens used:", response.usage.prompt_tokens);
-    console.log("Completion tokens used:", response.usage.completion_tokens);
-    console.log("Total tokens used:", response.usage.total_tokens);
+    const message = response.output_text;
+    console.log('OpenAI webhook report usage', response.usage || {});
 
     return message; // Return the generated message from the function
   } catch (error) {
@@ -230,7 +242,7 @@ async function generateWebhookReport(message) {
  */
 async function shouldRespondCheck(messageContent, classification, recentMessages = [], channelName = 'unknown', model = null) {
   // Use a cheaper/faster model for this check, or use the provided model
-  const checkModel = model || process.env.CLASSIFIER_MODEL || 'gpt-5.6-luna';
+  const checkRoute = getWorkloadConfig('responseCheck', model);
   
   // Get current date and time for context
   const currentDate = moment().format('MMMM D, YYYY');
@@ -240,25 +252,6 @@ async function shouldRespondCheck(messageContent, classification, recentMessages
   const recentContext = recentMessages.length > 0 
     ? `Recent messages in channel: ${recentMessages.slice(-3).join(' | ')}`
     : 'No recent messages';
-
-  // Build structured output parser
-  let formatInstructions = '';
-  let parser = null;
-  try {
-    const { loadCore } = require('../services/langchain/index');
-    const { StructuredOutputParser, z } = await (async () => {
-      const core = await loadCore();
-      return { StructuredOutputParser: core.StructuredOutputParser, z: core.z };
-    })();
-    const schema = z.object({
-      shouldRespond: z.boolean(),
-      reason: z.string()
-    });
-    parser = StructuredOutputParser.fromZodSchema(schema);
-    formatInstructions = parser.getFormatInstructions();
-  } catch (_e) {
-    formatInstructions = 'Return ONLY a JSON object: {"shouldRespond": true/false, "reason": "brief explanation"}';
-  }
 
   const systemPrompt = `The current date is ${currentDate} (${currentYear}). Always use this date when evaluating questions about dates, time, or current events.
 
@@ -273,7 +266,7 @@ Consider:
 
 The classifier has already determined this message might warrant a response, but you need to apply human-like judgment about timing, quality, and appropriateness.
 
-${formatInstructions}`;
+Return a short reason with the decision.`;
 
   const userPrompt = `Message to evaluate: "${messageContent}"
 
@@ -288,27 +281,16 @@ ${recentContext}
 Should the bot respond? Consider if the response would be quality, accurate, helpful, and not annoying or poorly timed.`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: checkModel,
-      messages: [
+    const result = await parseStructuredResponse({
+      name: 'response_decision',
+      schema: responseCheckSchema,
+      ...checkRoute,
+      maxOutputTokens: 160,
+      input: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      max_completion_tokens: 150, // Keep it short and cheap
-      response_format: { type: 'json_object' } // Force JSON response
     });
-
-    const content = response.choices[0].message.content;
-    let result;
-    if (parser) {
-      try {
-        result = await parser.parse(content);
-      } catch (_e) {
-        result = JSON.parse(content);
-      }
-    } else {
-      result = JSON.parse(content);
-    }
     
     // Validate response
     if (typeof result.shouldRespond !== 'boolean' || typeof result.reason !== 'string') {
@@ -364,20 +346,17 @@ async function generateImageResponse(prompt, persona, model, temperature, imageD
       content: prompt,
     },
   ];
-  console.log(formattedDescription)
   try {
-    const response = await openai.chat.completions.create({
-      model: model || getGlobalGptModel(),
-      messages: messages,
-      max_completion_tokens: getTokenLimits().image_analysis_limit
+    const response = await openai.responses.create({
+      ...getWorkloadConfig('imageAnalysis', model),
+      input: messages,
+      text: { verbosity: 'medium' },
+      max_output_tokens: getTokenLimits().image_analysis_limit,
+      store: false,
     });
 
-    const message = response.choices[0].message.content;
-
-    // Log the tokens used
-    console.log("Prompt tokens used:", response.usage.prompt_tokens);
-    console.log("Completion tokens used:", response.usage.completion_tokens);
-    console.log("Total tokens used:", response.usage.total_tokens);
+    const message = response.output_text;
+    console.log('OpenAI image analysis usage', response.usage || {});
 
     return message; // Return the generated message from the function
   } catch (error) {
@@ -424,86 +403,24 @@ async function generateEventData(prompt, channelId, client, metadata = {}) {
     const currentYear = moment().format('YYYY');
     const currentDateISO = moment().format('YYYY-MM-DD');
 
-    const exampleJson = {
-      "Event Name": "Sample Event",
-      "Date": "YYYY-MM-DD",
-      "Time": "HH:mm:ss",
-      "Recurrence": "once, daily, weekly, biweekly, or monthly",
-      "Reminders": "comma-separated offsets such as 1d,1h,15m",
-      "Timezone": "IANA Time Zone"
-    };
-
-    // Build structured output parser for event object
-    let eventFormatInstructions = '';
-    let eventParser = null;
-    try {
-      const { loadCore } = require('../services/langchain/index');
-      const { StructuredOutputParser, z } = await (async () => {
-        const core = await loadCore();
-        return { StructuredOutputParser: core.StructuredOutputParser, z: core.z };
-      })();
-      const schema = z.object({
-        "Event Name": z.string(),
-        "Date": z.string(),
-        "Time": z.string(),
-        "Recurrence": z.enum(["once", "daily", "weekly", "biweekly", "monthly"]),
-        "Reminders": z.string(),
-        "Timezone": z.string()
-      });
-      eventParser = StructuredOutputParser.fromZodSchema(schema);
-      eventFormatInstructions = eventParser.getFormatInstructions();
-    } catch (_e) {
-      eventFormatInstructions = 'Return ONLY valid JSON matching the provided example keys.';
-    }
-
-    const response = await openai.chat.completions.create({
-      model: getGlobalGptModel(),
-      messages: [
+    const eventData = await parseStructuredResponse({
+      name: 'scheduled_event',
+      schema: scheduledEventSchema,
+      ...getWorkloadConfig('scheduling'),
+      maxOutputTokens: 500,
+      safetyIdentifier: createSafetyIdentifier(metadata.creatorId),
+      input: [
         {
-          role: "system",
-          content: `The current date is ${currentDate} (${currentYear}). Today is ${currentDateTime} (ISO: ${currentDateISO}). Always use the current date as a reference when scheduling events. If the user mentions "today", "tomorrow", "next week", etc., calculate based on the current date: ${currentDateISO}.`
+          role: 'developer',
+          content: `Extract one event for the scheduler. Current date: ${currentDate} (${currentYear}); current local time: ${currentDateTime}; ISO date: ${currentDateISO}. Resolve relative dates from this value. Use the user's timezone when stated; otherwise use America/New_York. Recurrence must describe how often the event repeats. Convert reminders to whole minutes before the event; use [1440, 60] when none are specified.`
         },
-        {
-          role: "system",
-          content:
-            "The user wants to schedule an event based on the following template JSON. Please fill in the details based on the user's request.\n" +
-            "Follow these formatting rules strictly:\n" +
-            eventFormatInstructions + "\n\n" +
-            "Template JSON (example):\n" +
-            JSON.stringify(exampleJson, null, 2) + "\n\nUser's Request: "
-        },
-        {
-          role: "user",
-          content: `${prompt}`
-        }
+        { role: 'user', content: prompt },
       ],
-      response_format: { "type": "json_object" }
     });
-
-    const message = response.choices[0].message.content;
-
-    try {
-      let eventData;
-      if (eventParser) {
-        try {
-          eventData = await eventParser.parse(message);
-        } catch (_e) {
-          eventData = JSON.parse(message);
-        }
-      } else {
-        eventData = JSON.parse(message);
-      }
-      const scheduler = await scheduleEvent(eventData, channelId, client, true, metadata);
-      return scheduler;
-    } catch (error) {
-      console.error("Error parsing message:", error, "Message content:", message);
-      // Handle the case where the message isn't valid JSON (e.g., return an error message or handle it differently)
-    }
+    return scheduleEvent(eventData, channelId, client, true, metadata);
   } catch (error) {
-    console.error("Error generating response:", error); // Log the error for debugging
-
-    const errorMessage = `Unable to Schedule Event Using Data ${prompt}`;
-    return errorMessage; // Return an empty string if an error occurs
+    console.error('Error generating schedule data:', error);
+    return 'I could not understand that schedule. Try: “Game night every two weeks starting August 14 at 7:30 PM, remind me one day and one hour before.”';
   }
 }
 
@@ -532,5 +449,7 @@ module.exports = {
   generateEventData,
   generateImageResponse,
   generateWebhookReport,
-  shouldRespondCheck
+  shouldRespondCheck,
+  responseCheckSchema,
+  scheduledEventSchema,
 };

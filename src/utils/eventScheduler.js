@@ -13,6 +13,7 @@ function cancelEventJobs(id) {
 
 function parseReminderOffsets(value = '1d,1h') {
   if (Array.isArray(value)) return [...new Set(value.map(Number).filter(n => n >= 0 && n <= 525600))].sort((a, b) => b - a);
+  if (/^(none|off|no reminders)$/i.test(String(value).trim())) return [];
   const units = { m: 1, h: 60, d: 1440, w: 10080 };
   const result = String(value).split(',').map(part => part.trim().toLowerCase()).filter(Boolean).map(part => {
     const match = part.match(/^(\d+)\s*([mhdw])$/);
@@ -149,6 +150,22 @@ async function createEvent(data, client) {
 async function updateEvent(eventName, guildId, changes) {
   const event = await findEvent(eventName, guildId);
   if (!event) return null;
+  return applyEventChanges(event, changes);
+}
+
+async function updateEventById(id, guildId, changes) {
+  const event = await ScheduledEvent.findOne({ _id: id, guildId });
+  if (!event) return null;
+  return applyEventChanges(event, changes);
+}
+
+async function applyEventChanges(event, changes) {
+  if (changes.eventName && changes.eventName.trim().toLowerCase() !== event.eventName.toLowerCase()) {
+    const duplicate = await findEvent(changes.eventName, event.guildId);
+    if (duplicate && String(duplicate._id) !== String(event._id)) {
+      throw new Error('An event with that name already exists.');
+    }
+  }
   if (changes.eventName) event.eventName = changes.eventName.trim().slice(0, 100);
   if (changes.timezone) {
     if (!moment.tz.zone(changes.timezone)) throw new Error('Use a valid IANA timezone, such as America/New_York.');
@@ -170,6 +187,16 @@ async function findEvent(eventName, guildId) {
 async function setEventEnabled(eventName, guildId, enabled) {
   const event = await findEvent(eventName, guildId);
   if (!event) return null;
+  return applyEventEnabled(event, enabled);
+}
+
+async function setEventEnabledById(id, guildId, enabled) {
+  const event = await ScheduledEvent.findOne({ _id: id, guildId });
+  if (!event) return null;
+  return applyEventEnabled(event, enabled);
+}
+
+async function applyEventEnabled(event, enabled) {
   event.status = enabled ? 'active' : 'paused';
   if (enabled && event.startsAt <= new Date()) throw new Error('Edit this event to a future date before resuming it.');
   await event.save();
@@ -180,6 +207,16 @@ async function setEventEnabled(eventName, guildId, enabled) {
 async function deleteEvent(eventName, guildId) {
   const event = await findEvent(eventName, guildId);
   if (!event) return false;
+  return removeEvent(event);
+}
+
+async function deleteEventById(id, guildId) {
+  const event = await ScheduledEvent.findOne({ _id: id, guildId });
+  if (!event) return false;
+  return removeEvent(event);
+}
+
+async function removeEvent(event) {
   cancelEventJobs(event._id);
   await event.deleteOne();
   return true;
@@ -188,10 +225,27 @@ async function deleteEvent(eventName, guildId) {
 // Backward-compatible adapter for the natural-language quick scheduler.
 async function scheduleEvent(eventData, channelId, client, _save = true, metadata = {}) {
   const timezone = eventData.Timezone || eventData.timezone || 'America/New_York';
-  const startsAt = parseUserDate(`${eventData.Date} ${eventData.Time}`, timezone);
+  const date = eventData.Date || eventData.date;
+  const time = eventData.Time || eventData.time;
+  const startsAt = parseUserDate(`${date} ${time}`, timezone);
   const recurrence = eventData.Recurrence || eventData.recurrence || 'once';
-  const event = await createEvent({ eventName: eventData['Event Name'] || eventData.eventName, startsAt, recurrence, reminders: eventData.Reminders || '1d,1h', timezone, channelId, guildId: metadata.guildId, creatorId: metadata.creatorId }, client);
+  const reminders = eventData.reminderMinutes || eventData.Reminders || '1d,1h';
+  const event = await createEvent({ eventName: eventData['Event Name'] || eventData.eventName, startsAt, recurrence, reminders, timezone, channelId, guildId: metadata.guildId, creatorId: metadata.creatorId }, client);
   return formatEvent(event);
 }
 
-module.exports = { createEvent, deleteEvent, findEvent, formatEvent, loadJobsFromDatabase, parseReminderOffsets, parseUserDate, scheduleEvent, setEventEnabled, updateEvent };
+module.exports = {
+  createEvent,
+  deleteEvent,
+  deleteEventById,
+  findEvent,
+  formatEvent,
+  loadJobsFromDatabase,
+  parseReminderOffsets,
+  parseUserDate,
+  scheduleEvent,
+  setEventEnabled,
+  setEventEnabledById,
+  updateEvent,
+  updateEventById,
+};
