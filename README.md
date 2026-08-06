@@ -1,4 +1,4 @@
-# B-r0 Campaign Copilot 
+# B-r0 Campaign Copilot
 
 B-r0 is a campaign-aware Discord bot for tabletop communities. It combines configurable personas, scoped conversation memory, Roll20 lore retrieval, scheduling, dice, image generation and analysis, web-grounded answers, and opt-in community check-ins.
 
