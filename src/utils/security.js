@@ -1,4 +1,4 @@
-const { PermissionsBitField } = require("discord.js");
+const { MessageFlags, PermissionsBitField } = require("discord.js");
 
 const SAFE_ALLOWED_MENTIONS = Object.freeze({ parse: [], repliedUser: false });
 
@@ -32,7 +32,7 @@ function canManageGuild(interaction) {
 
 async function requireGuildManager(interaction) {
   if (canManageGuild(interaction)) return true;
-  const payload = { content: "You need the Manage Server permission to use this command.", ephemeral: true };
+  const payload = { content: "You need the Manage Server permission to use this command.", flags: MessageFlags.Ephemeral };
   if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
   else await interaction.reply(payload);
   return false;

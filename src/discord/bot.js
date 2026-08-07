@@ -24,6 +24,7 @@ const {
   createEvent,
   deleteEvent,
   deleteEventById,
+  EventInputError,
   formatEvent,
   loadJobsFromDatabase,
   parseUserDate,
@@ -975,7 +976,7 @@ const commands = [
           { name: "when", type: 3, description: "tomorrow 7:30 PM or 2026-08-14 19:30", required: true },
           { name: "recurrence", type: 3, description: "How often it repeats", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
           { name: "reminders", type: 3, description: "Advance reminders, e.g. 1d,2h,15m", required: false },
-          { name: "timezone", type: 3, description: "IANA timezone", required: false },
+          { name: "timezone", type: 3, description: "Eastern, Pacific, UTC, or America/New_York", required: false },
         ],
       },
       { name: "quick", description: "Create from natural language", type: 1, options: [{ name: "event", type: 3, description: "e.g. Game every two weeks Friday at 7 PM, remind 1d and 1h", required: true }] },
@@ -987,7 +988,7 @@ const commands = [
           { name: "when", type: 3, description: "New date/time", required: false },
           { name: "recurrence", type: 3, description: "New repeat setting", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
           { name: "reminders", type: 3, description: "Replace reminders, e.g. 1d,1h", required: false },
-          { name: "timezone", type: 3, description: "New IANA timezone", required: false },
+          { name: "timezone", type: 3, description: "Eastern, Pacific, UTC, or an IANA timezone", required: false },
         ],
       },
       { name: "pause", description: "Pause an event and its reminders", type: 1, options: [{ name: "event", type: 3, description: "Event name", required: true, autocomplete: true }] },
@@ -1423,7 +1424,7 @@ function start() {
 
       if (isEventComponent) {
         if (!interaction.inGuild() || !interaction.memberPermissions?.has(Discord.PermissionsBitField.Flags.ManageGuild)) {
-          await interaction.reply({ content: "You need **Manage Server** to manage scheduled events.", ephemeral: true });
+          await interaction.reply({ content: "You need **Manage Server** to manage scheduled events.", flags: Discord.MessageFlags.Ephemeral });
           return;
         }
 
@@ -1436,7 +1437,7 @@ function start() {
         const event = await getManagedEvent(interaction, eventId);
         if (!event) {
           const payload = { content: "That event no longer exists.", components: [] };
-          if (interaction.isModalSubmit()) await interaction.reply({ ...payload, ephemeral: true });
+          if (interaction.isModalSubmit()) await interaction.reply({ ...payload, flags: Discord.MessageFlags.Ephemeral });
           else await interaction.update(payload);
           return;
         }
@@ -1462,7 +1463,7 @@ function start() {
         } else if (action === "event_edit_modal") {
           const recurrence = interaction.fields.getTextInputValue("event_recurrence").trim().toLowerCase();
           if (!["once", "daily", "weekly", "biweekly", "monthly"].includes(recurrence)) {
-            await interaction.reply({ content: "Recurrence must be `once`, `daily`, `weekly`, `biweekly`, or `monthly`.", ephemeral: true });
+            await interaction.reply({ content: "Recurrence must be `once`, `daily`, `weekly`, `biweekly`, or `monthly`.", flags: Discord.MessageFlags.Ephemeral });
             return;
           }
           const updated = await updateEventById(event._id, interaction.guildId, {
@@ -1474,7 +1475,7 @@ function start() {
           });
           const payload = await buildEventManager(interaction.guildId, updated._id);
           if (interaction.isFromMessage()) await interaction.update(payload);
-          else await interaction.reply({ ...payload, ephemeral: true });
+          else await interaction.reply({ ...payload, flags: Discord.MessageFlags.Ephemeral });
         }
         return;
       }
@@ -1495,7 +1496,7 @@ function start() {
           const sub = interaction.options.getSubcommand();
 
           if (!serverId) {
-            await interaction.reply({ content: "Memory is only available in servers (not DMs).", ephemeral: true });
+            await interaction.reply({ content: "Memory is only available in servers (not DMs).", flags: Discord.MessageFlags.Ephemeral });
             break;
           }
 
@@ -1506,26 +1507,26 @@ function start() {
               const preview = facts.map(f => `- ${f.fact} (${f.category})`).join('\n') || "(no facts)";
               await interaction.reply({
                 content: `Memory is ${enabled ? '✅ enabled' : '❌ disabled'} for you in this server.\nSample facts:\n${preview}`,
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             } else if (sub === "enable") {
               await setMemoryEnabled(userId, username, serverId, true);
-              await interaction.reply({ content: "✅ Memory enabled for you in this server.", ephemeral: true });
+              await interaction.reply({ content: "✅ Memory enabled for you in this server.", flags: Discord.MessageFlags.Ephemeral });
             } else if (sub === "disable") {
               await setMemoryEnabled(userId, username, serverId, false);
-              await interaction.reply({ content: "✅ Memory disabled for you in this server.", ephemeral: true });
+              await interaction.reply({ content: "✅ Memory disabled for you in this server.", flags: Discord.MessageFlags.Ephemeral });
             } else if (sub === "list") {
               const facts = await listFacts(userId, serverId, 20);
               const lines = facts.map((f, i) => `${i + 1}. ${f.fact} (${f.category})`);
               await interaction.reply({
                 content: lines.length ? lines.join('\n') : "No stored facts for you in this server.",
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             } else if (sub === "forget") {
               const text = interaction.options.getString("text") || "";
               const category = interaction.options.getString("category") || "";
               if (!text && !category) {
-                await interaction.reply({ content: "Provide at least one of: text or category.", ephemeral: true });
+                await interaction.reply({ content: "Provide at least one of: text or category.", flags: Discord.MessageFlags.Ephemeral });
                 break;
               }
               const textNorm = (text || "").toLowerCase().trim();
@@ -1535,15 +1536,15 @@ function start() {
                 const byCategory = categoryNorm ? ((f.category || '').toLowerCase() === categoryNorm) : false;
                 return (text ? byText : false) || (category ? byCategory : false);
               });
-              await interaction.reply({ content: `✅ Forgotten ${count} fact(s).`, ephemeral: true });
+              await interaction.reply({ content: `✅ Forgotten ${count} fact(s).`, flags: Discord.MessageFlags.Ephemeral });
             } else if (sub === "clear") {
               const count = await clearAllFacts(userId, serverId);
               await UserSummary.deleteOne({ userId, serverId });
-              await interaction.reply({ content: `Cleared ${count} fact(s) and your conversation summary.`, ephemeral: true });
+              await interaction.reply({ content: `Cleared ${count} fact(s) and your conversation summary.`, flags: Discord.MessageFlags.Ephemeral });
             }
           } catch (err) {
             console.error('[Memory] Command error:', err);
-            await interaction.reply({ content: "An error occurred handling memory command.", ephemeral: true });
+            await interaction.reply({ content: "An error occurred handling memory command.", flags: Discord.MessageFlags.Ephemeral });
           }
           break;
         }
@@ -1715,7 +1716,7 @@ function start() {
 
         case "forgetme": {
           if (!interaction.guildId || !interaction.options.getBoolean("confirm")) {
-            await interaction.reply({ content: "Deletion was not confirmed.", ephemeral: true });
+            await interaction.reply({ content: "Deletion was not confirmed.", flags: Discord.MessageFlags.Ephemeral });
             break;
           }
           const userId = interaction.user.id;
@@ -1732,17 +1733,17 @@ function start() {
               ],
             }),
           ]);
-          await interaction.reply({ content: `Your stored data for this server was deleted (${deletedHistory} history records).`, ephemeral: true });
+          await interaction.reply({ content: `Your stored data for this server was deleted (${deletedHistory} history records).`, flags: Discord.MessageFlags.Ephemeral });
           break;
         }
 
         case "forgetall": {
           if (!interaction.options.getBoolean("confirm")) {
-            await interaction.reply({ content: "Deletion was not confirmed.", ephemeral: true });
+            await interaction.reply({ content: "Deletion was not confirmed.", flags: Discord.MessageFlags.Ephemeral });
             break;
           }
           const deleted = await clearAllHistory(interaction.guildId, [...interaction.guild.channels.cache.keys()]);
-          await interaction.reply({ content: `Deleted ${deleted} chat-history records for this server.`, ephemeral: true });
+          await interaction.reply({ content: `Deleted ${deleted} chat-history records for this server.`, flags: Discord.MessageFlags.Ephemeral });
           break;
         }
 
@@ -1756,10 +1757,10 @@ function start() {
               { ...operation, $setOnInsert: { textChannelId: interaction.channelId, voiceChannelId: interaction.member.voice?.channelId || interaction.channelId } },
               { upsert: true, new: true },
             );
-            await interaction.reply({ content: `${subCommand === "adduser" ? "Added" : "Removed"} ${user.username} ${subCommand === "adduser" ? "to" : "from"} Sir Mode.`, ephemeral: true });
+            await interaction.reply({ content: `${subCommand === "adduser" ? "Added" : "Removed"} ${user.username} ${subCommand === "adduser" ? "to" : "from"} Sir Mode.`, flags: Discord.MessageFlags.Ephemeral });
           } else if (subCommand === "start") {
             if (!interaction.member.voice?.channelId) {
-              await interaction.reply({ content: "Join the voice channel you want Sir Mode to monitor first.", ephemeral: true });
+              await interaction.reply({ content: "Join the voice channel you want Sir Mode to monitor first.", flags: Discord.MessageFlags.Ephemeral });
               break;
             }
             const existing = await SirModeConfig.findOne({ guildId: interaction.guildId });
@@ -1809,7 +1810,7 @@ function start() {
 
         case "schedule": {
           const subCommand = interaction.options.getSubcommand();
-          await interaction.deferReply({ ephemeral: true });
+          await interaction.deferReply({ flags: Discord.MessageFlags.Ephemeral });
           if (subCommand === "help") {
             await interaction.editReply("**Scheduling examples**\n- `/schedule manage` opens the visual event editor.\n- `/schedule create name:Game Night when:tomorrow 7:30 PM recurrence:biweekly reminders:1d,2h,15m`\n- `/schedule quick event:Game Night every two weeks Friday at 7 PM, remind me 1 day and 1 hour before`\n- Event fields also autocomplete as you type.");
           } else if (subCommand === "manage") {
@@ -1875,7 +1876,7 @@ function start() {
             );
           } catch (error) {
             console.error('[DiceRoll] Error with custom RNG, falling back to default:', error);
-            await interaction.reply({ content: error.message || "Invalid dice notation.", ephemeral: true });
+            await interaction.reply({ content: error.message || "Invalid dice notation.", flags: Discord.MessageFlags.Ephemeral });
           }
           break;
         }
@@ -1885,7 +1886,7 @@ function start() {
             const cooldownMs = Number(process.env.IMAGE_COOLDOWN_MS) || 120000;
             const previous = imageCooldowns.get(interaction.user.id) || 0;
             if (Date.now() - previous < cooldownMs) {
-              await interaction.reply({ content: "Please wait before generating another image.", ephemeral: true });
+              await interaction.reply({ content: "Please wait before generating another image.", flags: Discord.MessageFlags.Ephemeral });
               break;
             }
             imageCooldowns.set(interaction.user.id, Date.now());
@@ -1929,7 +1930,7 @@ function start() {
           if (subCommand === "list") {
             const subscriptions = await WebhookSubs.find({ guildId: interaction.guildId, channelId }).sort({ origin: 1 });
             const names = subscriptions.map(sub => sub.origin);
-            await interaction.reply({ content: names.length ? `Subscribed webhooks: ${names.join(", ")}` : "This channel has no webhook subscriptions.", ephemeral: true });
+            await interaction.reply({ content: names.length ? `Subscribed webhooks: ${names.join(", ")}` : "This channel has no webhook subscriptions.", flags: Discord.MessageFlags.Ephemeral });
           } else if (subCommand === "subscribe") {
             const selectedWebhookName = interaction.options
               .getString("name")
@@ -2151,7 +2152,7 @@ function start() {
               const quietStart = interaction.options.getString("quiet_start") || "22:00";
               const quietEnd = interaction.options.getString("quiet_end") || "08:00";
               if (!moment.tz.zone(timezone) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(quietStart) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(quietEnd)) {
-                await interaction.reply({ content: "Use a valid IANA timezone and HH:mm quiet-hour values.", ephemeral: true });
+                await interaction.reply({ content: "Use a valid IANA timezone and HH:mm quiet-hour values.", flags: Discord.MessageFlags.Ephemeral });
                 break;
               }
               await UserMentalHealthSettings.findOneAndUpdate(
@@ -2175,13 +2176,13 @@ function start() {
                 content: `✅ Mental health DM check-ins enabled!\n` +
                   `When the bot detects that you may be struggling, it will send you a caring check-in DM.\n` +
                   `You can disable this at any time with \`/mentalhealthcheckin disable\`.`,
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             } catch (error) {
               console.error(`[MentalHealth] Error enabling check-ins:`, error);
               await interaction.reply({
                 content: "An error occurred while enabling mental health check-ins.",
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             }
           } else if (subCommand === "disable") {
@@ -2203,26 +2204,26 @@ function start() {
                 content: `✅ Mental health DM check-ins disabled.\n` +
                   `You will no longer receive check-in DMs from the bot.\n` +
                   `You can re-enable this at any time with \`/mentalhealthcheckin enable\`.`,
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             } catch (error) {
               console.error(`[MentalHealth] Error disabling check-ins:`, error);
               await interaction.reply({
                 content: "An error occurred while disabling mental health check-ins.",
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             }
           } else if (subCommand === "snooze") {
             const hours = interaction.options.getInteger("hours");
             const settings = await UserMentalHealthSettings.findOneAndUpdate({ userId, mentalHealthCheckInsEnabled: true }, { snoozedUntil: new Date(Date.now() + hours * 3600000) }, { new: true });
-            await interaction.reply({ content: settings ? `Check-ins snoozed until <t:${Math.floor(settings.snoozedUntil.getTime() / 1000)}:F>.` : "Enable check-ins before snoozing them.", ephemeral: true });
+            await interaction.reply({ content: settings ? `Check-ins snoozed until <t:${Math.floor(settings.snoozedUntil.getTime() / 1000)}:F>.` : "Enable check-ins before snoozing them.", flags: Discord.MessageFlags.Ephemeral });
           } else if (subCommand === "resume") {
             await UserMentalHealthSettings.findOneAndUpdate({ userId }, { $unset: { snoozedUntil: 1 } });
-            await interaction.reply({ content: "Check-in snooze cleared. Your existing preferences are unchanged.", ephemeral: true });
+            await interaction.reply({ content: "Check-in snooze cleared. Your existing preferences are unchanged.", flags: Discord.MessageFlags.Ephemeral });
           } else if (subCommand === "test") {
             const { sendMentalHealthCheckInDM } = require("../utils/mentalHealthCheckIn");
             const result = await sendMentalHealthCheckInDM(userId, client, { force: true });
-            await interaction.reply({ content: result.sent ? "Test DM sent." : `Test DM not sent: ${result.reason}.`, ephemeral: true });
+            await interaction.reply({ content: result.sent ? "Test DM sent." : `Test DM not sent: ${result.reason}.`, flags: Discord.MessageFlags.Ephemeral });
           } else if (subCommand === "status") {
             try {
               const settings = await UserMentalHealthSettings.findOne({ userId });
@@ -2242,13 +2243,13 @@ function start() {
 
               await interaction.reply({
                 content: statusMessage,
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             } catch (error) {
               console.error(`[MentalHealth] Error getting status:`, error);
               await interaction.reply({
                 content: "An error occurred while getting mental health check-in status.",
-                ephemeral: true
+                flags: Discord.MessageFlags.Ephemeral
               });
             }
           }
@@ -2260,9 +2261,12 @@ function start() {
       }
     } catch (error) {
       console.error(`Error handling command ${interaction.commandName}:`, error.message);
-      const payload = { content: "That command couldn't be completed. Please try again.", ephemeral: true };
+      const content = error instanceof EventInputError
+        ? error.message
+        : "That command couldn't be completed. Please try again.";
+      const payload = { content, flags: Discord.MessageFlags.Ephemeral };
       try {
-        if (interaction.deferred) await interaction.editReply(payload);
+        if (interaction.deferred) await interaction.editReply({ content });
         else if (interaction.replied) await interaction.followUp(payload);
         else await interaction.reply(payload);
       } catch (replyError) {

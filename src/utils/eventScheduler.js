@@ -6,6 +6,35 @@ const { SAFE_ALLOWED_MENTIONS, escapeRegex } = require('./security');
 const jobs = new Map();
 let discordClient;
 
+class EventInputError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'EventInputError';
+  }
+}
+
+const TIMEZONE_ALIASES = Object.freeze({
+  utc: 'Etc/UTC',
+  gmt: 'Etc/UTC',
+  est: 'America/New_York',
+  edt: 'America/New_York',
+  eastern: 'America/New_York',
+  et: 'America/New_York',
+  cst: 'America/Chicago',
+  cdt: 'America/Chicago',
+  central: 'America/Chicago',
+  ct: 'America/Chicago',
+  mst: 'America/Denver',
+  mdt: 'America/Denver',
+  mountain: 'America/Denver',
+  mt: 'America/Denver',
+  pst: 'America/Los_Angeles',
+  pdt: 'America/Los_Angeles',
+  pacific: 'America/Los_Angeles',
+  pt: 'America/Los_Angeles',
+});
+const IANA_TIMEZONES = new Map(moment.tz.names().map(name => [name.toLowerCase(), name]));
+
 function cancelEventJobs(id) {
   for (const job of jobs.get(String(id)) || []) job.cancel();
   jobs.delete(String(id));
@@ -17,15 +46,23 @@ function parseReminderOffsets(value = '1d,1h') {
   const units = { m: 1, h: 60, d: 1440, w: 10080 };
   const result = String(value).split(',').map(part => part.trim().toLowerCase()).filter(Boolean).map(part => {
     const match = part.match(/^(\d+)\s*([mhdw])$/);
-    if (!match) throw new Error(`Invalid reminder "${part}". Use values such as 1d, 2h, 30m.`);
+    if (!match) throw new EventInputError(`Invalid reminder "${part}". Use values such as 1d, 2h, 30m.`);
     return Number(match[1]) * units[match[2]];
   });
-  if (result.length > 8) throw new Error('Use no more than 8 advance reminders.');
+  if (result.length > 8) throw new EventInputError('Use no more than 8 advance reminders.');
   return [...new Set(result)].sort((a, b) => b - a);
 }
 
+function normalizeTimezone(value, fallback = 'America/New_York') {
+  const supplied = String(value || fallback).trim();
+  const lookup = supplied.toLowerCase();
+  const normalized = TIMEZONE_ALIASES[lookup] || IANA_TIMEZONES.get(lookup);
+  if (normalized && moment.tz.zone(normalized)) return normalized;
+  throw new EventInputError(`Timezone "${supplied}" is not recognized. Try Eastern, Pacific, UTC, or an IANA timezone such as America/New_York.`);
+}
+
 function parseUserDate(value, timezone = 'America/New_York') {
-  if (!moment.tz.zone(timezone)) throw new Error('Use a valid IANA timezone, such as America/New_York.');
+  timezone = normalizeTimezone(timezone);
   const text = String(value).trim();
   const now = moment.tz(timezone);
   const relative = text.match(/^(today|tomorrow)\s+(?:at\s+)?(.+)$/i);
@@ -39,8 +76,8 @@ function parseUserDate(value, timezone = 'America/New_York') {
     const formats = ['YYYY-MM-DD HH:mm:ss', 'YYYY-MM-DD HH:mm', 'YYYY-MM-DD h:mm A', 'MM/DD/YYYY h:mm A', moment.ISO_8601];
     parsed = moment.tz(text, formats, true, timezone);
   }
-  if (!parsed?.isValid()) throw new Error('Invalid date. Try `tomorrow 7:30 PM` or `2026-08-14 19:30`.');
-  if (!parsed.isAfter(now)) throw new Error('The event must start in the future.');
+  if (!parsed?.isValid()) throw new EventInputError('Invalid date. Try `tomorrow 7:30 PM` or `2026-08-14 19:30`.');
+  if (!parsed.isAfter(now)) throw new EventInputError('The event must start in the future.');
   return parsed.toDate();
 }
 
@@ -127,17 +164,18 @@ async function loadJobsFromDatabase(client) {
 
 async function createEvent(data, client) {
   discordClient = client || discordClient;
-  if (!data.eventName?.trim()) throw new Error('Event name is required.');
+  if (!data.eventName?.trim()) throw new EventInputError('Event name is required.');
+  const timezone = normalizeTimezone(data.timezone);
   const duplicate = await findEvent(data.eventName, data.guildId);
-  if (duplicate) throw new Error('An event with that name already exists. Edit it or choose a different name.');
+  if (duplicate) throw new EventInputError('An event with that name already exists. Edit it or choose a different name.');
   const event = await ScheduledEvent.create({
     eventName: String(data.eventName).trim().slice(0, 100),
     channelId: data.channelId,
     guildId: data.guildId,
     creatorId: data.creatorId,
-    timezone: data.timezone || 'America/New_York',
+    timezone,
     startsAt: data.startsAt,
-    time: moment(data.startsAt).tz(data.timezone).format('YYYY-MM-DDTHH:mm:ss'),
+    time: moment(data.startsAt).tz(timezone).format('YYYY-MM-DDTHH:mm:ss'),
     recurrence: data.recurrence || 'once',
     frequency: data.recurrence || 'once',
     reminderMinutes: parseReminderOffsets(data.reminders),
@@ -163,13 +201,12 @@ async function applyEventChanges(event, changes) {
   if (changes.eventName && changes.eventName.trim().toLowerCase() !== event.eventName.toLowerCase()) {
     const duplicate = await findEvent(changes.eventName, event.guildId);
     if (duplicate && String(duplicate._id) !== String(event._id)) {
-      throw new Error('An event with that name already exists.');
+      throw new EventInputError('An event with that name already exists.');
     }
   }
   if (changes.eventName) event.eventName = changes.eventName.trim().slice(0, 100);
   if (changes.timezone) {
-    if (!moment.tz.zone(changes.timezone)) throw new Error('Use a valid IANA timezone, such as America/New_York.');
-    event.timezone = changes.timezone;
+    event.timezone = normalizeTimezone(changes.timezone);
   }
   if (changes.when) event.startsAt = parseUserDate(changes.when, event.timezone);
   if (changes.recurrence) event.recurrence = changes.recurrence;
@@ -198,7 +235,7 @@ async function setEventEnabledById(id, guildId, enabled) {
 
 async function applyEventEnabled(event, enabled) {
   event.status = enabled ? 'active' : 'paused';
-  if (enabled && event.startsAt <= new Date()) throw new Error('Edit this event to a future date before resuming it.');
+  if (enabled && event.startsAt <= new Date()) throw new EventInputError('Edit this event to a future date before resuming it.');
   await event.save();
   await scheduleDocument(event);
   return event;
@@ -224,7 +261,7 @@ async function removeEvent(event) {
 
 // Backward-compatible adapter for the natural-language quick scheduler.
 async function scheduleEvent(eventData, channelId, client, _save = true, metadata = {}) {
-  const timezone = eventData.Timezone || eventData.timezone || 'America/New_York';
+  const timezone = normalizeTimezone(eventData.Timezone || eventData.timezone);
   const date = eventData.Date || eventData.date;
   const time = eventData.Time || eventData.time;
   const startsAt = parseUserDate(`${date} ${time}`, timezone);
@@ -238,9 +275,11 @@ module.exports = {
   createEvent,
   deleteEvent,
   deleteEventById,
+  EventInputError,
   findEvent,
   formatEvent,
   loadJobsFromDatabase,
+  normalizeTimezone,
   parseReminderOffsets,
   parseUserDate,
   scheduleEvent,

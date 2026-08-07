@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { commands } = require('../src/discord/bot');
 
 test('Discord command names are unique and choice lists fit Discord limits', () => {
@@ -43,4 +45,14 @@ test('event mutation fields provide autocomplete', () => {
   }
   const legacyDelete = commands.find(command => command.name === 'deleteevent');
   assert.equal(legacyDelete.options[0].autocomplete, true);
+});
+
+test('Discord interaction responses use message flags instead of deprecated ephemeral options', () => {
+  const sourceFiles = [
+    path.resolve(__dirname, '../src/discord/bot.js'),
+    path.resolve(__dirname, '../src/utils/security.js'),
+  ];
+  for (const sourceFile of sourceFiles) {
+    assert.doesNotMatch(fs.readFileSync(sourceFile, 'utf8'), /ephemeral\s*:\s*true/);
+  }
 });

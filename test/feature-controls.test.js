@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const moment = require('moment-timezone');
-const { parseReminderOffsets, parseUserDate } = require('../src/utils/eventScheduler');
+const { normalizeTimezone, parseReminderOffsets, parseUserDate } = require('../src/utils/eventScheduler');
 const { inQuietHours } = require('../src/utils/mentalHealthCheckIn');
 const { getUserAllowedModels } = require('../src/utils/config');
 
@@ -21,6 +21,14 @@ test('parses tomorrow in the requested timezone', () => {
   const parsed = moment(date).tz('America/New_York');
   assert.equal(parsed.hour(), 19);
   assert.equal(parsed.minute(), 30);
+});
+
+test('normalizes friendly and case-insensitive timezone input', () => {
+  assert.equal(normalizeTimezone('Eastern'), 'America/New_York');
+  assert.equal(normalizeTimezone('PDT'), 'America/Los_Angeles');
+  assert.equal(normalizeTimezone('america/chicago'), 'America/Chicago');
+  assert.equal(normalizeTimezone(' UTC '), 'Etc/UTC');
+  assert.throws(() => normalizeTimezone('New York-ish'), /not recognized/);
 });
 
 test('quiet hours work across midnight', () => {
