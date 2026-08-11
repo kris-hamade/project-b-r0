@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const moment = require('moment-timezone');
-const { normalizeTimezone, parseReminderOffsets, parseUserDate } = require('../src/utils/eventScheduler');
+const { normalizeTimezone, parseReminderOffsets, parseReminderSettings, parseUserDate } = require('../src/utils/eventScheduler');
 const { inQuietHours } = require('../src/utils/mentalHealthCheckIn');
 const { getUserAllowedModels } = require('../src/utils/config');
 
@@ -21,6 +21,30 @@ test('parses tomorrow in the requested timezone', () => {
   const parsed = moment(date).tz('America/New_York');
   assert.equal(parsed.hour(), 19);
   assert.equal(parsed.minute(), 30);
+});
+
+test('parses a friendly named date with weekday and timezone suffix', () => {
+  const date = parseUserDate(
+    'Thursday, August 13 at 8:30PM CDT',
+    'CDT',
+    moment.tz('2026-08-11 14:22', 'America/Chicago').toDate(),
+  );
+  assert.equal(moment(date).tz('America/Chicago').format('YYYY-MM-DD HH:mm'), '2026-08-13 20:30');
+});
+
+test('rejects a weekday that conflicts with the calendar date', () => {
+  assert.throws(() => parseUserDate(
+    'Friday, August 13 at 8:30PM CDT',
+    'CDT',
+    moment.tz('2026-08-11 14:22', 'America/Chicago').toDate(),
+  ), /is a Thursday, not Friday/);
+});
+
+test('parses daily clock-time reminders as persistent schedules', () => {
+  assert.deepEqual(parseReminderSettings('daily at 5pm CDT', 'CDT'), {
+    minutes: [],
+    schedule: { frequency: 'daily', time: '17:00', timezone: 'America/Chicago' },
+  });
 });
 
 test('normalizes friendly and case-insensitive timezone input', () => {

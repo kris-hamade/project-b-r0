@@ -1,6 +1,8 @@
 const Discord = require("discord.js");
+const crypto = require("crypto");
 const client = require("./client");
 const {
+  extractEventData,
   generateEventData,
   generateImageResponse,
   generateResponse,
@@ -27,6 +29,7 @@ const {
   EventInputError,
   formatEvent,
   loadJobsFromDatabase,
+  normalizeTimezone,
   parseUserDate,
   setEventEnabled,
   setEventEnabledById,
@@ -86,6 +89,31 @@ const { Routes } = require("discord-api-types/v10");
 const responseRateLimits = new Map();
 const responseModeCooldowns = new Map();
 const imageCooldowns = new Map();
+const pendingScheduleConfirmations = new Map();
+
+function looksLikeSchedulingRequest(content, botId = null) {
+  const mentionPattern = botId ? new RegExp(`<@!?${botId}>`, 'g') : /<@!?\d+>/g;
+  const text = String(content || '').replace(mentionPattern, '').trim();
+  return /^(?:hey[,!]?\s+)?(?:please\s+)?(?:schedule|book)\b/i.test(text) ||
+    /\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:schedule|book)\b/i.test(text) ||
+    /\b(?:create|add|set\s+up)\b.{0,40}\b(?:event|reminder|session|meeting|game)\b/i.test(text) ||
+    /\bremind\s+(?:me|us)\b/i.test(text);
+}
+
+function buildEventCreateData(eventData, message) {
+  const timezone = normalizeTimezone(eventData.timezone || process.env.DEFAULT_TIMEZONE);
+  return {
+    eventName: eventData.eventName,
+    startsAt: parseUserDate(`${eventData.date} ${eventData.time}`, timezone),
+    recurrence: eventData.recurrence,
+    reminders: eventData.reminderMinutes,
+    reminderSchedule: eventData.reminderSchedule,
+    timezone,
+    channelId: message.channel.id,
+    guildId: message.guild.id,
+    creatorId: message.author.id,
+  };
+}
 
 async function handleMessage(message) {
   let nickname = message.guild
@@ -353,6 +381,41 @@ async function handleMessage(message) {
   if (!rate || rate.resetAt <= nowMs) responseRateLimits.set(rateKey, { count: 1, resetAt: nowMs + 60_000 });
   else if (++rate.count > responseLimit) {
     if (botMentioned) await message.reply({ content: "I'm handling a lot right now—please try again in a moment.", allowedMentions: SAFE_ALLOWED_MENTIONS });
+    return;
+  }
+
+  if (message.guild && botMentioned && looksLikeSchedulingRequest(message.content, client.user.id)) {
+    if (!message.member?.permissions?.has(Discord.PermissionsBitField.Flags.ManageGuild)) {
+      await message.reply({ content: "You need **Manage Server** to schedule events.", allowedMentions: SAFE_ALLOWED_MENTIONS });
+      return;
+    }
+    try {
+      await message.channel.sendTyping();
+      const timezone = normalizeTimezone(process.env.DEFAULT_TIMEZONE);
+      const cleanedRequest = message.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
+      const eventData = await extractEventData(cleanedRequest, { creatorId: message.author.id, timezone });
+      const createData = buildEventCreateData(eventData, message);
+      const token = crypto.randomBytes(12).toString('hex');
+      const expiresAt = Date.now() + 10 * 60_000;
+      pendingScheduleConfirmations.set(token, { createData, userId: message.author.id, guildId: message.guild.id, expiresAt });
+      const cleanup = setTimeout(() => pendingScheduleConfirmations.delete(token), 10 * 60_000);
+      cleanup.unref?.();
+      const preview = formatEvent({ ...createData, status: 'pending' });
+      await message.reply({
+        content: `I understood this event:\n${preview}\n\nCreate it?`,
+        components: [new Discord.ActionRowBuilder().addComponents(
+          new Discord.ButtonBuilder().setCustomId(`schedule_chat_confirm:${token}`).setLabel("Confirm").setStyle(Discord.ButtonStyle.Success),
+          new Discord.ButtonBuilder().setCustomId(`schedule_chat_cancel:${token}`).setLabel("Cancel").setStyle(Discord.ButtonStyle.Secondary),
+        )],
+        allowedMentions: SAFE_ALLOWED_MENTIONS,
+      });
+    } catch (error) {
+      console.error('[NaturalSchedule] Unable to prepare event:', error.message);
+      const content = error instanceof EventInputError
+        ? error.message
+        : "I couldn't confidently understand that event. Try including its name, date, time, timezone, recurrence, and reminder preference.";
+      await message.reply({ content, allowedMentions: SAFE_ALLOWED_MENTIONS });
+    }
     return;
   }
 
@@ -973,9 +1036,9 @@ const commands = [
         name: "create", description: "Create an event with repeat and reminder controls", type: 1,
         options: [
           { name: "name", type: 3, description: "Event name", required: true },
-          { name: "when", type: 3, description: "tomorrow 7:30 PM or 2026-08-14 19:30", required: true },
+          { name: "when", type: 3, description: "Thursday, August 13 at 8:30 PM or tomorrow 7:30 PM", required: true },
           { name: "recurrence", type: 3, description: "How often it repeats", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
-          { name: "reminders", type: 3, description: "Advance reminders, e.g. 1d,2h,15m", required: false },
+          { name: "reminders", type: 3, description: "1d,2h,15m or daily at 5 PM", required: false },
           { name: "timezone", type: 3, description: "Eastern, Pacific, UTC, or America/New_York", required: false },
         ],
       },
@@ -987,7 +1050,7 @@ const commands = [
           { name: "name", type: 3, description: "New name", required: false },
           { name: "when", type: 3, description: "New date/time", required: false },
           { name: "recurrence", type: 3, description: "New repeat setting", required: false, choices: ["once", "daily", "weekly", "biweekly", "monthly"].map(value => ({ name: value === "biweekly" ? "Every two weeks" : value, value })) },
-          { name: "reminders", type: 3, description: "Replace reminders, e.g. 1d,1h", required: false },
+          { name: "reminders", type: 3, description: "1d,1h, none, or daily at 5 PM", required: false },
           { name: "timezone", type: 3, description: "Eastern, Pacific, UTC, or an IANA timezone", required: false },
         ],
       },
@@ -1210,6 +1273,10 @@ const commands = [
 ];
 
 function eventReminderText(event) {
+  if (event.reminderSchedule?.frequency === "daily") {
+    const clock = moment(event.reminderSchedule.time, "HH:mm").format("h:mm A");
+    return `daily at ${clock} ${event.reminderSchedule.timezone || event.timezone}`;
+  }
   const values = event.reminderMinutes || [];
   return values.map((minutes) => {
     if (minutes % 10080 === 0) return `${minutes / 10080}w`;
@@ -1414,6 +1481,37 @@ function start() {
             name: `${event.eventName} (${event.status})`.slice(0, 100),
             value: event.eventName.slice(0, 100),
           })));
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith("schedule_chat_")) {
+        const [actionId, token] = interaction.customId.split(":");
+        const pending = pendingScheduleConfirmations.get(token);
+        if (!pending || pending.expiresAt <= Date.now()) {
+          pendingScheduleConfirmations.delete(token);
+          await interaction.update({ content: "That scheduling confirmation expired. Ask me to schedule it again.", components: [] });
+          return;
+        }
+        if (pending.userId !== interaction.user.id || pending.guildId !== interaction.guildId) {
+          await interaction.reply({ content: "Only the person who requested this event can confirm it.", flags: Discord.MessageFlags.Ephemeral });
+          return;
+        }
+        if (!interaction.memberPermissions?.has(Discord.PermissionsBitField.Flags.ManageGuild)) {
+          await interaction.reply({ content: "You need **Manage Server** to schedule events.", flags: Discord.MessageFlags.Ephemeral });
+          return;
+        }
+        pendingScheduleConfirmations.delete(token);
+        if (actionId === "schedule_chat_cancel") {
+          await interaction.update({ content: "Scheduling cancelled.", components: [] });
+          return;
+        }
+        try {
+          const event = await createEvent(pending.createData, client);
+          await interaction.update({ content: `✅ Scheduled\n${formatEvent(event)}`, components: [] });
+        } catch (error) {
+          const content = error instanceof EventInputError ? error.message : "That event could not be scheduled. Please try again.";
+          await interaction.update({ content, components: [] });
+        }
         return;
       }
 
@@ -1812,7 +1910,7 @@ function start() {
           const subCommand = interaction.options.getSubcommand();
           await interaction.deferReply({ flags: Discord.MessageFlags.Ephemeral });
           if (subCommand === "help") {
-            await interaction.editReply("**Scheduling examples**\n- `/schedule manage` opens the visual event editor.\n- `/schedule create name:Game Night when:tomorrow 7:30 PM recurrence:biweekly reminders:1d,2h,15m`\n- `/schedule quick event:Game Night every two weeks Friday at 7 PM, remind me 1 day and 1 hour before`\n- Event fields also autocomplete as you type.");
+            await interaction.editReply("**Scheduling examples**\n- `/schedule manage` opens the visual event editor.\n- `/schedule create name:Game Night when:Thursday, August 13 at 8:30 PM timezone:CDT reminders:daily at 5 PM`\n- `/schedule create name:Game Night when:tomorrow 7:30 PM recurrence:biweekly reminders:1d,2h,15m`\n- `/schedule quick event:Game Night every two weeks Friday at 7 PM, remind me 1 day and 1 hour before`\n- Event fields also autocomplete as you type.");
           } else if (subCommand === "manage") {
             await interaction.editReply(await buildEventManager(interaction.guildId));
           } else if (subCommand === "list") {
@@ -2285,4 +2383,5 @@ function start() {
 module.exports = {
   start,
   commands,
+  looksLikeSchedulingRequest,
 };

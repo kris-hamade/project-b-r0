@@ -11,6 +11,11 @@ const ScheduledEventSchema = new mongoose.Schema({
   startsAt: Date,
   recurrence: { type: String, enum: ['once', 'daily', 'weekly', 'biweekly', 'monthly'], default: 'once' },
   reminderMinutes: { type: [Number], default: [1440, 60] },
+  reminderSchedule: {
+    frequency: { type: String, enum: ['daily'] },
+    time: String,
+    timezone: String,
+  },
   status: { type: String, enum: ['active', 'paused', 'completed'], default: 'active' },
   lastOccurrenceAt: Date
 }, { timestamps: true, collection: 'scheduledEvents' });

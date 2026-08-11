@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { commands } = require('../src/discord/bot');
+const { commands, looksLikeSchedulingRequest } = require('../src/discord/bot');
 
 test('Discord command names are unique and choice lists fit Discord limits', () => {
   const names = commands.map(command => command.name);
@@ -55,4 +55,12 @@ test('Discord interaction responses use message flags instead of deprecated ephe
   for (const sourceFile of sourceFiles) {
     assert.doesNotMatch(fs.readFileSync(sourceFile, 'utf8'), /ephemeral\s*:\s*true/);
   }
+});
+
+test('natural scheduling intent requires an explicit action request', () => {
+  assert.equal(looksLikeSchedulingRequest('<@123> schedule game night Thursday at 8 PM', '123'), true);
+  assert.equal(looksLikeSchedulingRequest('Could you book Session 37 for next Friday?', '123'), true);
+  assert.equal(looksLikeSchedulingRequest('Remind us daily at 5 PM about the game', '123'), true);
+  assert.equal(looksLikeSchedulingRequest('What is on the schedule this week?', '123'), false);
+  assert.equal(looksLikeSchedulingRequest('We discussed Thursday at 8 PM', '123'), false);
 });

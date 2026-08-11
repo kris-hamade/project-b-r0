@@ -53,6 +53,40 @@ function parseReminderOffsets(value = '1d,1h') {
   return [...new Set(result)].sort((a, b) => b - a);
 }
 
+function parseReminderSettings(value = '1d,1h', timezone = 'America/New_York') {
+  if (Array.isArray(value) || !/^daily\s+at\s+/i.test(String(value).trim())) {
+    return { minutes: parseReminderOffsets(value), schedule: null };
+  }
+
+  const match = String(value).trim().match(/^daily\s+at\s+(.+?)(?:\s+([A-Za-z_]+(?:\/[A-Za-z_+-]+)?))?$/i);
+  const clockText = match?.[1]?.trim();
+  const reminderTimezone = normalizeTimezone(match?.[2] || timezone);
+  const clock = moment(clockText, ['h:mm A', 'h:mmA', 'h A', 'hA', 'HH:mm'], true);
+  if (!clock.isValid()) {
+    throw new EventInputError('Invalid daily reminder time. Try `daily at 5 PM` or use offsets such as `1d,1h`.');
+  }
+  return {
+    minutes: [],
+    schedule: {
+      frequency: 'daily',
+      time: clock.format('HH:mm'),
+      timezone: reminderTimezone,
+    },
+  };
+}
+
+function normalizeReminderSchedule(value, timezone = 'America/New_York') {
+  if (!value) return null;
+  if (value.frequency !== 'daily' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(value.time || ''))) {
+    throw new EventInputError('Invalid reminder schedule. Try `daily at 5 PM` or offsets such as `1d,1h`.');
+  }
+  return {
+    frequency: 'daily',
+    time: value.time,
+    timezone: normalizeTimezone(value.timezone || timezone),
+  };
+}
+
 function normalizeTimezone(value, fallback = 'America/New_York') {
   const supplied = String(value || fallback).trim();
   const lookup = supplied.toLowerCase();
@@ -61,10 +95,10 @@ function normalizeTimezone(value, fallback = 'America/New_York') {
   throw new EventInputError(`Timezone "${supplied}" is not recognized. Try Eastern, Pacific, UTC, or an IANA timezone such as America/New_York.`);
 }
 
-function parseUserDate(value, timezone = 'America/New_York') {
+function parseUserDate(value, timezone = 'America/New_York', referenceDate = new Date()) {
   timezone = normalizeTimezone(timezone);
   const text = String(value).trim();
-  const now = moment.tz(timezone);
+  const now = moment(referenceDate).tz(timezone);
   const relative = text.match(/^(today|tomorrow)\s+(?:at\s+)?(.+)$/i);
   let parsed;
   if (relative) {
@@ -76,7 +110,32 @@ function parseUserDate(value, timezone = 'America/New_York') {
     const formats = ['YYYY-MM-DD HH:mm:ss', 'YYYY-MM-DD HH:mm', 'YYYY-MM-DD h:mm A', 'MM/DD/YYYY h:mm A', moment.ISO_8601];
     parsed = moment.tz(text, formats, true, timezone);
   }
-  if (!parsed?.isValid()) throw new EventInputError('Invalid date. Try `tomorrow 7:30 PM` or `2026-08-14 19:30`.');
+  if (!parsed?.isValid()) {
+    const withoutZone = text.replace(/\s+(?:UTC|GMT|[ECMP][SD]T|ET|CT|MT|PT)$/i, '').trim();
+    const weekdayMatch = withoutZone.match(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s+/i);
+    const expectedWeekday = weekdayMatch?.[1];
+    const naturalText = withoutZone
+      .replace(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),?\s+/i, '')
+      .replace(/(\d{1,2})(?:st|nd|rd|th)\b/gi, '$1')
+      .replace(/\s+at\s+/i, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const hasYear = /\b\d{4}\b/.test(naturalText);
+    const formatsWithYear = [
+      'MMMM D YYYY h:mm A', 'MMMM D YYYY h:mmA', 'MMM D YYYY h:mm A', 'MMM D YYYY h:mmA',
+      'MMMM D, YYYY h:mm A', 'MMMM D, YYYY h:mmA', 'MMM D, YYYY h:mm A', 'MMM D, YYYY h:mmA',
+    ];
+    const formatsWithoutYear = ['MMMM D h:mm A', 'MMMM D h:mmA', 'MMM D h:mm A', 'MMM D h:mmA'];
+    parsed = moment.tz(naturalText, hasYear ? formatsWithYear : formatsWithoutYear, true, timezone);
+    if (parsed.isValid() && !hasYear) {
+      parsed.year(now.year());
+      if (!parsed.isAfter(now)) parsed.add(1, 'year');
+    }
+    if (parsed.isValid() && expectedWeekday && parsed.format('dddd').toLowerCase() !== expectedWeekday.toLowerCase()) {
+      throw new EventInputError(`${parsed.format('MMMM D, YYYY')} is a ${parsed.format('dddd')}, not ${expectedWeekday}.`);
+    }
+  }
+  if (!parsed?.isValid()) throw new EventInputError('Invalid date. Try `Thursday, August 13 at 8:30 PM`, `tomorrow 7:30 PM`, or `2026-08-14 19:30`.');
   if (!parsed.isAfter(now)) throw new EventInputError('The event must start in the future.');
   return parsed.toDate();
 }
@@ -100,7 +159,12 @@ function formatOffset(minutes) {
 
 function formatEvent(event) {
   const when = moment(event.startsAt).tz(event.timezone).format('ddd, MMM D, YYYY [at] h:mm A z');
-  const reminders = (event.reminderMinutes || []).map(formatOffset).join(', ') || 'none';
+  let reminders = (event.reminderMinutes || []).map(formatOffset).join(', ') || 'none';
+  if (event.reminderSchedule?.frequency === 'daily') {
+    const clock = moment(event.reminderSchedule.time, 'HH:mm').format('h:mm A');
+    const zone = event.reminderSchedule.timezone || event.timezone;
+    reminders = `daily at ${clock} (${zone})`;
+  }
   return `**${event.eventName}** · ${when}\nStatus: ${event.status} · Repeats: ${event.recurrence} · Reminders: ${reminders}`;
 }
 
@@ -121,6 +185,22 @@ async function scheduleDocument(event) {
       const job = schedule.scheduleJob(runAt, () => send(event.channelId, `⏰ **${event.eventName}** starts in ${formatOffset(minutes)}.`));
       if (job) eventJobs.push(job);
     }
+  }
+
+  if (event.reminderSchedule?.frequency === 'daily' && event.reminderSchedule.time) {
+    const [hour, minute] = event.reminderSchedule.time.split(':').map(Number);
+    const rule = new schedule.RecurrenceRule();
+    rule.tz = normalizeTimezone(event.reminderSchedule.timezone || event.timezone);
+    rule.hour = hour;
+    rule.minute = minute;
+    const dailyJob = schedule.scheduleJob(rule, fireDate => {
+      if (fireDate < startsAt) {
+        const when = moment(startsAt).tz(event.timezone).format('ddd, MMM D [at] h:mm A z');
+        return send(event.channelId, `⏰ Daily reminder: **${event.eventName}** starts ${when}.`);
+      }
+      return undefined;
+    });
+    if (dailyJob) eventJobs.push(dailyJob);
   }
 
   if (startsAt > new Date()) {
@@ -168,6 +248,12 @@ async function createEvent(data, client) {
   const timezone = normalizeTimezone(data.timezone);
   const duplicate = await findEvent(data.eventName, data.guildId);
   if (duplicate) throw new EventInputError('An event with that name already exists. Edit it or choose a different name.');
+  const reminderSettings = data.reminderSchedule
+    ? {
+        minutes: parseReminderOffsets(data.reminders ?? []),
+        schedule: normalizeReminderSchedule(data.reminderSchedule, timezone),
+      }
+    : parseReminderSettings(data.reminders, timezone);
   const event = await ScheduledEvent.create({
     eventName: String(data.eventName).trim().slice(0, 100),
     channelId: data.channelId,
@@ -178,7 +264,8 @@ async function createEvent(data, client) {
     time: moment(data.startsAt).tz(timezone).format('YYYY-MM-DDTHH:mm:ss'),
     recurrence: data.recurrence || 'once',
     frequency: data.recurrence || 'once',
-    reminderMinutes: parseReminderOffsets(data.reminders),
+    reminderMinutes: reminderSettings.minutes,
+    reminderSchedule: reminderSettings.schedule || undefined,
     status: 'active',
   });
   await scheduleDocument(event);
@@ -210,7 +297,11 @@ async function applyEventChanges(event, changes) {
   }
   if (changes.when) event.startsAt = parseUserDate(changes.when, event.timezone);
   if (changes.recurrence) event.recurrence = changes.recurrence;
-  if (changes.reminders) event.reminderMinutes = parseReminderOffsets(changes.reminders);
+  if (changes.reminders) {
+    const reminderSettings = parseReminderSettings(changes.reminders, event.timezone);
+    event.reminderMinutes = reminderSettings.minutes;
+    event.reminderSchedule = reminderSettings.schedule || undefined;
+  }
   event.time = moment(event.startsAt).tz(event.timezone).format('YYYY-MM-DDTHH:mm:ss');
   await event.save();
   await scheduleDocument(event);
@@ -266,8 +357,8 @@ async function scheduleEvent(eventData, channelId, client, _save = true, metadat
   const time = eventData.Time || eventData.time;
   const startsAt = parseUserDate(`${date} ${time}`, timezone);
   const recurrence = eventData.Recurrence || eventData.recurrence || 'once';
-  const reminders = eventData.reminderMinutes || eventData.Reminders || '1d,1h';
-  const event = await createEvent({ eventName: eventData['Event Name'] || eventData.eventName, startsAt, recurrence, reminders, timezone, channelId, guildId: metadata.guildId, creatorId: metadata.creatorId }, client);
+  const reminders = eventData.reminderMinutes ?? eventData.Reminders ?? '1d,1h';
+  const event = await createEvent({ eventName: eventData['Event Name'] || eventData.eventName, startsAt, recurrence, reminders, reminderSchedule: eventData.reminderSchedule, timezone, channelId, guildId: metadata.guildId, creatorId: metadata.creatorId }, client);
   return formatEvent(event);
 }
 
@@ -280,7 +371,9 @@ module.exports = {
   formatEvent,
   loadJobsFromDatabase,
   normalizeTimezone,
+  normalizeReminderSchedule,
   parseReminderOffsets,
+  parseReminderSettings,
   parseUserDate,
   scheduleEvent,
   setEventEnabled,

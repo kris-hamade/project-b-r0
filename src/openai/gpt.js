@@ -1,6 +1,6 @@
 const { getTokenLimits, getGlobalGptModel } = require("../utils/config.js");
 const { getHistory } = require("../discord/historyLog.js");
-const { scheduleEvent } = require("../utils/eventScheduler.js");
+const { normalizeTimezone, scheduleEvent } = require("../utils/eventScheduler.js");
 const openai = require('./openAi');
 const moment = require('moment-timezone');
 const { buildBaseSystemMessages } = require('../services/langchain/prompt');
@@ -393,30 +393,29 @@ function capitalizeFirstLetter(string) {
   return string.charAt(0).toUpperCase() + string.slice(1);
 }
 
+async function extractEventData(prompt, metadata = {}) {
+  console.log('Extracting event data');
+  const timezone = normalizeTimezone(metadata.timezone || 'America/New_York');
+  const now = moment().tz(timezone);
+  return parseStructuredResponse({
+    name: 'scheduled_event',
+    schema: scheduledEventSchema,
+    ...getWorkloadConfig('scheduling'),
+    maxOutputTokens: 600,
+    safetyIdentifier: createSafetyIdentifier(metadata.creatorId),
+    input: [
+      {
+        role: 'developer',
+        content: `Extract exactly one scheduling event. Current local date and time: ${now.format('MMMM D, YYYY [at] h:mm A z')} (ISO date ${now.format('YYYY-MM-DD')}). Resolve relative dates from this value. Use the user's stated timezone; otherwise use ${timezone}. Recurrence describes how often the event itself repeats. For offset reminders, return whole minutes in reminderMinutes and null for reminderSchedule. For a request such as "remind me daily at 5 PM", return [] for reminderMinutes and a daily reminderSchedule with 24-hour HH:mm time and its IANA timezone. If no reminder is stated, use [1440, 60] and null.`
+      },
+      { role: 'user', content: prompt },
+    ],
+  });
+}
+
 async function generateEventData(prompt, channelId, client, metadata = {}) {
   try {
-    console.log('Generating event data');
-
-    // Get current date and time for context
-    const currentDate = moment().format('MMMM D, YYYY');
-    const currentDateTime = moment().format('MMMM D, YYYY [at] h:mm A');
-    const currentYear = moment().format('YYYY');
-    const currentDateISO = moment().format('YYYY-MM-DD');
-
-    const eventData = await parseStructuredResponse({
-      name: 'scheduled_event',
-      schema: scheduledEventSchema,
-      ...getWorkloadConfig('scheduling'),
-      maxOutputTokens: 500,
-      safetyIdentifier: createSafetyIdentifier(metadata.creatorId),
-      input: [
-        {
-          role: 'developer',
-          content: `Extract one event for the scheduler. Current date: ${currentDate} (${currentYear}); current local time: ${currentDateTime}; ISO date: ${currentDateISO}. Resolve relative dates from this value. Use the user's timezone when stated; otherwise use America/New_York. Recurrence must describe how often the event repeats. Convert reminders to whole minutes before the event; use [1440, 60] when none are specified.`
-        },
-        { role: 'user', content: prompt },
-      ],
-    });
+    const eventData = await extractEventData(prompt, metadata);
     return scheduleEvent(eventData, channelId, client, true, metadata);
   } catch (error) {
     console.error('Error generating schedule data:', error);
@@ -445,6 +444,7 @@ async function personaBuilder(persona) {
 }
 
 module.exports = {
+  extractEventData,
   generateResponse,
   generateEventData,
   generateImageResponse,

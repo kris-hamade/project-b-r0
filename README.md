@@ -43,7 +43,8 @@ Non-production runs automatically prefer `DISCORD_TESTING_TOKEN`. Production use
 - `/image generate`
 - `/schedule manage` — private visual picker with Edit, Pause/Resume, and confirmed Delete controls
 - `/schedule create|quick|edit|pause|resume|delete|list|help` — event-name fields autocomplete as you type
-- Scheduling supports once, daily, weekly, every-two-weeks, and monthly recurrence plus advance reminders such as `1d,2h,15m`.
+- Scheduling supports once, daily, weekly, every-two-weeks, and monthly recurrence, advance offsets such as `1d,2h,15m`, and clock-time reminders such as `daily at 5 PM`.
+- Managers can also mention or reply to B-r0 naturally: “schedule Session 37 Thursday at 8:30 PM CDT and remind us daily at 5 PM.” B-r0 previews the interpreted event for confirmation before saving it.
 - `/checkin enable|disable|status`
 - `/responsemode enable|disable|configure|status` — mention-only, smart, or always modes with cooldown and confidence controls
 - `/webhook list|subscribe|unsubscribe`

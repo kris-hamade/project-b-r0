@@ -11,6 +11,11 @@ const scheduledEventSchema = z.object({
   time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/).describe('Local time in 24-hour HH:mm:ss format'),
   recurrence: z.enum(['once', 'daily', 'weekly', 'biweekly', 'monthly']),
   reminderMinutes: z.array(z.number().int().min(0).max(525600)).max(8),
+  reminderSchedule: z.object({
+    frequency: z.literal('daily'),
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    timezone: z.string().min(1),
+  }).nullable(),
   timezone: z.string().min(1).describe('IANA timezone, such as America/New_York'),
 });
 
