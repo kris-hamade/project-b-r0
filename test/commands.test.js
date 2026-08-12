@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { commands, looksLikeSchedulingRequest } = require('../src/discord/bot');
+const { commands, looksLikeSchedulingRequest, shouldIgnoreEveryoneMessage } = require('../src/discord/bot');
 
 test('Discord command names are unique and choice lists fit Discord limits', () => {
   const names = commands.map(command => command.name);
@@ -63,4 +63,11 @@ test('natural scheduling intent requires an explicit action request', () => {
   assert.equal(looksLikeSchedulingRequest('Remind us daily at 5 PM about the game', '123'), true);
   assert.equal(looksLikeSchedulingRequest('What is on the schedule this week?', '123'), false);
   assert.equal(looksLikeSchedulingRequest('We discussed Thursday at 8 PM', '123'), false);
+});
+
+test('server messages containing @everyone are always ignored', () => {
+  assert.equal(shouldIgnoreEveryoneMessage('@everyone game starts soon'), true);
+  assert.equal(shouldIgnoreEveryoneMessage('<@123> please answer @EVERYONE', false), true);
+  assert.equal(shouldIgnoreEveryoneMessage('the word everyone is harmless'), false);
+  assert.equal(shouldIgnoreEveryoneMessage('@everyone in a DM', true), false);
 });

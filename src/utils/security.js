@@ -1,6 +1,7 @@
 const { MessageFlags, PermissionsBitField } = require("discord.js");
 
 const SAFE_ALLOWED_MENTIONS = Object.freeze({ parse: [], repliedUser: false });
+const REMINDER_ALLOWED_MENTIONS = Object.freeze({ parse: ["everyone"], repliedUser: false });
 
 function sanitizeMessage(text) {
   if (typeof text !== "string") return "";
@@ -44,6 +45,7 @@ function escapeRegex(value) {
 
 module.exports = {
   SAFE_ALLOWED_MENTIONS,
+  REMINDER_ALLOWED_MENTIONS,
   sanitizeMessage,
   splitDiscordMessage,
   canManageGuild,

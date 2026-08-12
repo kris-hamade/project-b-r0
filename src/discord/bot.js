@@ -100,6 +100,10 @@ function looksLikeSchedulingRequest(content, botId = null) {
     /\bremind\s+(?:me|us)\b/i.test(text);
 }
 
+function shouldIgnoreEveryoneMessage(content, isDirectMessage = false) {
+  return !isDirectMessage && /@everyone\b/i.test(String(content || ''));
+}
+
 function buildEventCreateData(eventData, message) {
   const timezone = normalizeTimezone(eventData.timezone || process.env.DEFAULT_TIMEZONE);
   return {
@@ -126,9 +130,8 @@ async function handleMessage(message) {
   let responseModeName = "mention";
   let responseModeConfig = null;
   
-  // Check if bot is directly @mentioned or if message is a reply to the bot (available throughout function)
-  // IMPORTANT: When @everyone is used, Discord includes ALL users in mentions, so we need to check
-  // if @everyone/@here is present first, and if so, verify explicit bot mention in content
+  // Check if the bot is directly mentioned or the message replies to it. The
+  // unconditional @everyone rejection below runs before any response path.
   const hasEveryoneOrHere = !(message.channel instanceof Discord.DMChannel) && 
     (message.mentions.everyone || message.mentions.here || /@everyone/i.test(message.content) || /@here/i.test(message.content));
   
@@ -165,6 +168,13 @@ async function handleMessage(message) {
 
   // Ignore messages from other bots
   if (message.author.bot) return;
+
+  // Never respond to a server message containing @everyone, even when B-r0 is
+  // explicitly mentioned or the channel is configured for automatic replies.
+  if (shouldIgnoreEveryoneMessage(message.content, message.channel instanceof Discord.DMChannel)) {
+    console.log('[Bot] Skipping response: message contains @everyone');
+    return;
+  }
 
   // ============================ Mental Health DM Check-In Response =============================
   // Handle DM responses for mental health check-ins
@@ -349,13 +359,11 @@ async function handleMessage(message) {
       respondWithoutMention = false;
     }
     
-    // CRITICAL: Skip if @everyone or @here is mentioned UNLESS bot is explicitly mentioned
-    // This is a safety check - responseMode should NOT allow responding to @everyone
-    // Note: hasEveryoneOrHere is already checked above when determining botMentioned
-    // Also check for role mentions
+    // @everyone has already been rejected unconditionally. Keep the existing
+    // explicit-mention requirement for @here and role mentions.
     const hasRoleMentions = message.mentions.roles.size > 0;
     
-    // Only respond to @everyone/@here if the bot is explicitly mentioned (safety first)
+    // Only respond to @here or role mentions if the bot is explicitly mentioned.
     if ((hasEveryoneOrHere || hasRoleMentions) && !botMentioned) {
       console.log(`[Bot] Skipping response: Message mentions @everyone, @here, or roles (and bot is not explicitly mentioned - safety check)`);
       return;
@@ -769,8 +777,8 @@ async function handleMessage(message) {
       console.log(`[MentalHealth] Skipping history save for high-sensitivity response in channel ${channelId} to prevent future mental health references`);
     }
 
-    // CRITICAL: Sanitize response text to prevent @everyone and @here mentions
-    // This is a security measure - the bot should NEVER mention @everyone or @here
+    // Sanitize model-generated responses. Only scheduler reminder code has a
+    // narrowly scoped exception that can send an intentional @everyone ping.
     responseText = sanitizeMessage(responseText);
     
     const MAX_MESSAGE_LENGTH = 2000;
@@ -2384,4 +2392,5 @@ module.exports = {
   start,
   commands,
   looksLikeSchedulingRequest,
+  shouldIgnoreEveryoneMessage,
 };

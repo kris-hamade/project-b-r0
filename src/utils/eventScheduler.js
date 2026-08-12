@@ -1,7 +1,7 @@
 const schedule = require('node-schedule');
 const moment = require('moment-timezone');
 const ScheduledEvent = require('../models/scheduledEvent');
-const { SAFE_ALLOWED_MENTIONS, escapeRegex } = require('./security');
+const { REMINDER_ALLOWED_MENTIONS, SAFE_ALLOWED_MENTIONS, escapeRegex } = require('./security');
 
 const jobs = new Map();
 let discordClient;
@@ -168,9 +168,13 @@ function formatEvent(event) {
   return `**${event.eventName}** · ${when}\nStatus: ${event.status} · Repeats: ${event.recurrence} · Reminders: ${reminders}`;
 }
 
-async function send(channelId, content) {
+async function send(channelId, content, allowedMentions = SAFE_ALLOWED_MENTIONS) {
   const channel = await discordClient.channels.fetch(channelId);
-  if (channel?.isTextBased()) await channel.send({ content, allowedMentions: SAFE_ALLOWED_MENTIONS });
+  if (channel?.isTextBased()) await channel.send({ content, allowedMentions });
+}
+
+function buildReminderMessage(event, detail) {
+  return `@everyone ⏰ **${event.eventName}** ${detail}`;
 }
 
 async function scheduleDocument(event) {
@@ -182,7 +186,11 @@ async function scheduleDocument(event) {
   for (const minutes of event.reminderMinutes || []) {
     const runAt = new Date(startsAt.getTime() - minutes * 60000);
     if (runAt > new Date()) {
-      const job = schedule.scheduleJob(runAt, () => send(event.channelId, `⏰ **${event.eventName}** starts in ${formatOffset(minutes)}.`));
+      const job = schedule.scheduleJob(runAt, () => send(
+        event.channelId,
+        buildReminderMessage(event, `starts in ${formatOffset(minutes)}.`),
+        REMINDER_ALLOWED_MENTIONS,
+      ));
       if (job) eventJobs.push(job);
     }
   }
@@ -196,7 +204,11 @@ async function scheduleDocument(event) {
     const dailyJob = schedule.scheduleJob(rule, fireDate => {
       if (fireDate < startsAt) {
         const when = moment(startsAt).tz(event.timezone).format('ddd, MMM D [at] h:mm A z');
-        return send(event.channelId, `⏰ Daily reminder: **${event.eventName}** starts ${when}.`);
+        return send(
+          event.channelId,
+          buildReminderMessage(event, `starts ${when}.`),
+          REMINDER_ALLOWED_MENTIONS,
+        );
       }
       return undefined;
     });
@@ -364,6 +376,7 @@ async function scheduleEvent(eventData, channelId, client, _save = true, metadat
 
 module.exports = {
   createEvent,
+  buildReminderMessage,
   deleteEvent,
   deleteEventById,
   EventInputError,

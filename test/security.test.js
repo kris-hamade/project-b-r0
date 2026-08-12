@@ -1,11 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { sanitizeMessage, splitDiscordMessage, escapeRegex } = require('../src/utils/security');
+const { REMINDER_ALLOWED_MENTIONS, SAFE_ALLOWED_MENTIONS, sanitizeMessage, splitDiscordMessage, escapeRegex } = require('../src/utils/security');
+const { buildReminderMessage } = require('../src/utils/eventScheduler');
 const { rollDice } = require('../src/utils/dice');
 const { _safeEqual } = require('../src/api/middlewares');
 
 test('sanitizes mass mentions case-insensitively', () => {
   assert.equal(sanitizeMessage('@everyone and @HERE'), '@\u200beveryone and @\u200bhere');
+});
+test('only the reminder policy permits @everyone notifications', () => {
+  assert.deepEqual(SAFE_ALLOWED_MENTIONS.parse, []);
+  assert.deepEqual(REMINDER_ALLOWED_MENTIONS.parse, ['everyone']);
+  assert.match(buildReminderMessage({ eventName: 'Game Night' }, 'starts in 1h.'), /^@everyone .*Game Night.*starts in 1h/);
 });
 test('splits long Discord messages on readable boundaries', () => {
   const chunks = splitDiscordMessage(`${'word '.repeat(500)}`.trim(), 200);
